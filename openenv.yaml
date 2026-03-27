@@ -1,0 +1,321 @@
+name: memory-management-rl
+version: "1.0.0"
+description: >
+  An OpenEnv-compatible reinforcement learning environment for training and
+  evaluating LLM-based memory management policies. The agent decides what to
+  remember, update, and forget across a multi-turn conversation in order to
+  maximise a future recall reward. This fills a real gap: no existing OpenEnv
+  environment benchmarks selective memory under a budget constraint.
+
+author: "memory-mgmt-with-rl-openenv"
+license: MIT
+
+# ---------------------------------------------------------------------------
+# Server
+# ---------------------------------------------------------------------------
+server:
+  host: "0.0.0.0"
+  port: 7860
+  base_url: "http://localhost:7860"
+
+# ---------------------------------------------------------------------------
+# Endpoints  (all required by the OpenEnv spec)
+# ---------------------------------------------------------------------------
+endpoints:
+  reset:
+    method: POST
+    path: /reset
+    description: Start a new episode. Returns session_id and first observation.
+    request_schema:
+      type: object
+      properties:
+        task_id:
+          type: string
+          description: "One of: easy_preference_recall | medium_preference_constraint_correction | hard_full_memory_management"
+        seed:
+          type: integer
+          description: Optional RNG seed for reproducibility.
+        session_id:
+          type: string
+          description: Optional; auto-generated if omitted.
+    response_schema:
+      type: object
+      required: [session_id, task_id, observation]
+      properties:
+        session_id:
+          type: string
+        task_id:
+          type: string
+        observation:
+          $ref: "#/schemas/Observation"
+
+  step:
+    method: POST
+    path: /step
+    description: Advance the episode by one action. Returns next observation, reward, and done flag.
+    request_schema:
+      type: object
+      required: [session_id, action]
+      properties:
+        session_id:
+          type: string
+        action:
+          $ref: "#/schemas/Action"
+    response_schema:
+      type: object
+      required: [session_id, reward, done, info]
+      properties:
+        session_id:
+          type: string
+        observation:
+          oneOf:
+            - $ref: "#/schemas/Observation"
+            - type: "null"
+        reward:
+          type: number
+          minimum: -1.0
+          maximum: 2.0
+          description: Step-level reward (dense signal).
+        done:
+          type: boolean
+        info:
+          type: object
+
+  tasks:
+    method: GET
+    path: /tasks
+    description: List all available tasks with their schemas and difficulty metadata.
+    response_schema:
+      type: object
+      required: [tasks, action_schema, observation_schema]
+      properties:
+        tasks:
+          type: array
+          items:
+            $ref: "#/schemas/TaskDefinition"
+        action_schema:
+          type: object
+        observation_schema:
+          type: object
+
+  grader:
+    method: POST
+    path: /grader
+    description: Score the completed episode. Returns a normalised score in [0.0, 1.0].
+    request_schema:
+      type: object
+      required: [session_id]
+      properties:
+        session_id:
+          type: string
+    response_schema:
+      type: object
+      required: [session_id, task_id, score, metrics, final_answer]
+      properties:
+        session_id:
+          type: string
+        task_id:
+          type: string
+        score:
+          type: number
+          minimum: 0.0
+          maximum: 1.0
+          description: Normalised episode score.
+        metrics:
+          type: object
+          description: 14-dimensional GraderMetrics breakdown.
+        final_answer:
+          type: string
+
+  baseline:
+    method: GET
+    path: /baseline
+    description: Run the built-in baseline agents on all tasks and return their average scores.
+    response_schema:
+      type: object
+      required: [baseline_scores, seeds_used]
+      properties:
+        baseline_scores:
+          type: object
+        seeds_used:
+          type: array
+          items:
+            type: integer
+
+# ---------------------------------------------------------------------------
+# Tasks
+# ---------------------------------------------------------------------------
+tasks:
+  - id: easy_preference_recall
+    name: "Single Preference Recall"
+    difficulty: easy
+    memory_budget: 300
+    max_turns: 5
+    description: >
+      Store one user preference from a short conversation and recall it verbatim.
+      No corrections. Generous memory budget.
+
+  - id: medium_preference_constraint_correction
+    name: "Preference + Constraint with Correction"
+    difficulty: medium
+    memory_budget: 200
+    max_turns: 7
+    description: >
+      Store a preference and a constraint. A correction supersedes the original
+      preference; the agent must update or replace the stale memory and incorporate
+      both the corrected preference and the constraint in the final answer.
+
+  - id: hard_full_memory_management
+    name: "Full Memory Management Under Pressure"
+    difficulty: hard
+    memory_budget: 120
+    max_turns: 8
+    description: >
+      Tight budget, multiple corrections, interleaved distractors. The agent must
+      selectively store high-utility items, evict stale data, and produce a final
+      answer reconciling preference + constraint + project_info. Memory hoarding
+      is penalised.
+
+# ---------------------------------------------------------------------------
+# Schemas
+# ---------------------------------------------------------------------------
+schemas:
+  Action:
+    type: object
+    required: [type]
+    properties:
+      type:
+        type: string
+        enum: [store, store_summary, ignore, retrieve, update, delete, answer]
+      text:
+        type: string
+        description: Text payload (store/store_summary/update/answer/retrieve-by-query).
+      ids:
+        type: array
+        items:
+          type: string
+        description: Memory item IDs (retrieve/update/delete).
+
+  Observation:
+    type: object
+    required:
+      - current_user_message
+      - current_turn_kind
+      - recent_conversation
+      - memory_bank
+      - memory_budget_remaining
+      - step_number
+    properties:
+      current_user_message:
+        type: string
+      current_turn_kind:
+        type: string
+        enum: [preference, constraint, correction, project_info, distractor, final_query]
+      recent_conversation:
+        type: array
+        items:
+          $ref: "#/schemas/ConversationTurn"
+      memory_bank:
+        type: array
+        items:
+          $ref: "#/schemas/MemoryItem"
+      memory_budget_remaining:
+        type: integer
+      step_number:
+        type: integer
+      episode_metadata:
+        type: object
+
+  ConversationTurn:
+    type: object
+    required: [turn_id, text, kind]
+    properties:
+      turn_id:
+        type: integer
+      text:
+        type: string
+      kind:
+        type: string
+      memory_type:
+        type: string
+        enum: [preference, constraint, project_info]
+      tags:
+        type: array
+        items:
+          type: string
+      metadata:
+        type: object
+
+  MemoryItem:
+    type: object
+    required: [id, text, type, created_at, last_used, token_length]
+    properties:
+      id:
+        type: string
+      text:
+        type: string
+      type:
+        type: string
+        enum: [preference, constraint, project_info]
+      created_at:
+        type: integer
+      last_used:
+        type: integer
+      token_length:
+        type: integer
+      utility_score:
+        type: number
+      source_turn:
+        type: integer
+      metadata:
+        type: object
+
+  TaskDefinition:
+    type: object
+    required: [task_id, name, description, difficulty, memory_budget, max_turns]
+    properties:
+      task_id:
+        type: string
+      name:
+        type: string
+      description:
+        type: string
+      difficulty:
+        type: string
+        enum: [easy, medium, hard]
+      memory_budget:
+        type: integer
+      max_turns:
+        type: integer
+      seed_range:
+        type: array
+        items:
+          type: integer
+      expected_score_range:
+        type: array
+        items:
+          type: number
+
+# ---------------------------------------------------------------------------
+# Reward signal
+# ---------------------------------------------------------------------------
+reward:
+  type: dense_plus_delayed
+  range: [0.0, 1.0]
+  description: >
+    Dense step-level rewards fire on every action (store/retrieve/update/delete/ignore).
+    A terminal delayed reward fires at episode end based on the GraderMetrics composite:
+      R = 0.45*success + 0.20*precision + 0.15*recall + 0.10*compactness
+        + 0.10*freshness - penalties
+    Final score is clamped to [0.0, 1.0].
+
+# ---------------------------------------------------------------------------
+# Baseline
+# ---------------------------------------------------------------------------
+baseline:
+  agent: RuleBasedMemoryAgent
+  description: >
+    Deterministic rule-based agent that stores preference/constraint/correction/project_info
+    turns and ignores distractors. Answers by composing memory bank contents.
+    Expected average score: 0.45–0.65 on easy, 0.30–0.50 on medium, 0.15–0.35 on hard.
+  script: run_baseline.py

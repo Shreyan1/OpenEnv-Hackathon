@@ -1,0 +1,23 @@
+
+# Claude Code worktrees and session data
+.claude/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+
+# Python environment
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Runtime artifacts
+checkpoints/
+artifacts/
+*.jsonl
+.DS_Store

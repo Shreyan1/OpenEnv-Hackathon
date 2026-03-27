@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "server",
+  "dolt_database": "memory_mgmt_with_rl_openenv",
+  "project_id": "97c126d0-9c30-4fef-91a1-918b2a37836a"
+}
