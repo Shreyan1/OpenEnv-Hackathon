@@ -8,9 +8,11 @@ Endpoints:
   POST /grader          — score a completed episode
   GET  /baseline        — run baseline agents across all tasks and return scores
   GET  /health          — liveness check
+  WS   /ws              — OpenEnv-native WebSocket endpoint
 """
 from __future__ import annotations
 
+import json
 import sys
 import os
 import time
@@ -21,7 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from typing import Any, Dict, List, Optional
 import uuid
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from src.memory_management_agent import (
@@ -302,6 +304,117 @@ def baseline() -> Dict[str, Any]:
             "An RL-trained policy should exceed rule_based on hidden seeds."
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# WebSocket endpoint (OpenEnv native protocol)
+# ---------------------------------------------------------------------------
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket) -> None:
+    """
+    OpenEnv-native WebSocket endpoint.
+
+    Each connection is its own session — no session_id needed over the wire.
+
+    Client → server message types:
+      {"type": "reset", "data": {"task_id": "...", "seed": 42}}
+      {"type": "step",  "data": {"type": "store", "text": "..."}}
+      {"type": "state"}
+      {"type": "close"}
+
+    Server → client responses:
+      {"type": "observation", "data": {"observation": {...}, "reward": float|null, "done": bool}}
+      {"type": "state",       "data": {"episode_id": ..., "step_count": int, "task_id": ...}}
+      {"type": "error",       "data": {"message": "...", "code": "..."}}
+    On done=True the observation data also includes score, metrics, final_answer.
+    """
+    await websocket.accept()
+    env: Optional[MemoryManagementEnv] = None
+    task_id: Optional[str] = None
+    episode_done: bool = False
+
+    async def _err(message: str, code: str) -> None:
+        await websocket.send_json({"type": "error", "data": {"message": message, "code": code}})
+
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                await _err("Invalid JSON", "INVALID_JSON")
+                continue
+
+            msg_type = msg.get("type")
+            data = msg.get("data") or {}
+
+            if msg_type == "reset":
+                tid = data.get("task_id") or ALL_TASKS[0].task_id
+                if tid not in TASK_BY_ID:
+                    await _err(f"Unknown task_id: {tid!r}. Valid: {list(TASK_BY_ID)}", "VALIDATION_ERROR")
+                    continue
+                task_id = tid
+                env = _make_env(tid)
+                obs = env.reset(seed=data.get("seed"))
+                episode_done = False
+                await websocket.send_json({
+                    "type": "observation",
+                    "data": {"observation": obs.to_dict(), "reward": None, "done": False},
+                })
+
+            elif msg_type == "step":
+                if env is None:
+                    await _err("No active episode. Send reset first.", "SESSION_ERROR")
+                    continue
+                if episode_done:
+                    await _err("Episode is done. Send reset to start a new one.", "SESSION_ERROR")
+                    continue
+                try:
+                    ActionType(data.get("type", ""))
+                except ValueError:
+                    await _err(
+                        f"Invalid action type {data.get('type')!r}. Valid: {[a.value for a in ActionType]}",
+                        "VALIDATION_ERROR",
+                    )
+                    continue
+                result = env.step(data)
+                episode_done = result.done
+                resp: Dict[str, Any] = {
+                    "observation": result.observation.to_dict() if result.observation else None,
+                    "reward": result.reward,
+                    "done": result.done,
+                }
+                if result.done:
+                    ep = env.build_episode_result()
+                    resp["score"] = max(0.0, min(1.0, ep.reward))
+                    resp["metrics"] = ep.metrics.to_dict()
+                    resp["final_answer"] = ep.final_answer
+                await websocket.send_json({"type": "observation", "data": resp})
+
+            elif msg_type == "state":
+                await websocket.send_json({
+                    "type": "state",
+                    "data": {
+                        "episode_id": env.episode.episode_id if env and env.episode else None,
+                        "step_count": env._step_index if env else 0,
+                        "task_id": task_id,
+                    },
+                })
+
+            elif msg_type == "close":
+                break
+
+            else:
+                await _err(f"Unknown message type: {msg_type!r}", "UNKNOWN_TYPE")
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        try:
+            await _err(str(exc), "EXECUTION_ERROR")
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
