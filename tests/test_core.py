@@ -12,12 +12,16 @@ from memory_management_agent import (  # noqa: E402
     Action,
     ActionType,
     EmbeddingRetrievalAgent,
+    Grader,
     KeywordRetrievalAgent,
     MemoryManagementEnv,
     MemoryStore,
     PreferenceOnlyAgent,
     RuleBasedMemoryAgent,
     SyntheticEpisodeGenerator,
+    TASK_HARD,
+    TASK_MEDIUM,
+    generator_for_task,
 )
 from memory_management_agent.evaluation import evaluate_split, hidden_eval_seeds, run_episode  # noqa: E402
 from memory_management_agent.training import build_policy_prompt, parse_action_block, summarize_rollouts  # noqa: E402
@@ -55,6 +59,14 @@ class MemoryStoreTests(unittest.TestCase):
         results = store.query("What database should I use?", k=1)
         self.assertEqual(len(results), 1)
 
+    def test_decay_reduces_stale_utility(self) -> None:
+        store = MemoryStore(budget_tokens=50, decay_rate=0.1, decay_window=1)
+        item, _, _ = store.add("Use PostgreSQL", memory_type="preference", turn_index=0, utility_score=0.8)  # type: ignore[arg-type]
+        store.apply_decay(current_turn=1)
+        self.assertAlmostEqual(store.snapshot()[0].utility_score, item.utility_score)
+        store.apply_decay(current_turn=3)
+        self.assertLess(store.snapshot()[0].utility_score, item.utility_score)
+
 
 class EnvironmentTests(unittest.TestCase):
     def test_environment_runs_to_completion(self) -> None:
@@ -81,6 +93,26 @@ class EnvironmentTests(unittest.TestCase):
         episode_result = env.build_episode_result()
         self.assertIsNotNone(episode_result.metrics)
         self.assertGreaterEqual(episode_result.reward, -1.0)
+
+    def test_hidden_turn_kind_observation_masks_recent_context(self) -> None:
+        env = MemoryManagementEnv(generator=generator_for_task(TASK_MEDIUM))
+        observation = env.reset(seed=11)
+        self.assertEqual(observation.current_turn_kind, "unknown")
+
+        next_observation = env.step(Action.ignore()).observation
+        self.assertIsNotNone(next_observation)
+        assert next_observation is not None
+        self.assertEqual(next_observation.current_turn_kind, "unknown")
+        self.assertTrue(all(turn.kind == "unknown" for turn in next_observation.recent_conversation))
+        self.assertTrue(all(turn.memory_type is None for turn in next_observation.recent_conversation))
+
+    def test_hard_task_contains_confabulation_and_two_corrections(self) -> None:
+        episode = generator_for_task(TASK_HARD).generate(seed=17)
+        kinds = [turn.kind for turn in episode.turns]
+        self.assertEqual(kinds.count("correction"), 2)
+        self.assertIn("confabulation", kinds)
+        self.assertIn("project_info", kinds)
+        self.assertEqual(episode.metadata["required_memory_types"], ["preference", "constraint", "project_info"])
 
 
 class BaselineAgentTests(unittest.TestCase):
@@ -131,6 +163,31 @@ class TrainingScaffoldTests(unittest.TestCase):
         self.assertIn("You are a memory management policy.", prompt.observation_prompt)
         self.assertIn("Memory bank:", prompt.observation_prompt)
         self.assertIn("ACTION:", prompt.action_format)
+
+    def test_grader_scores_constraint_adherence(self) -> None:
+        episode = generator_for_task(TASK_MEDIUM).generate(seed=2)
+        grader = Grader()
+        bad = grader.score_episode(episode, (), "PostgreSQL in prose", ())
+        constraint_keyword = episode.metadata["latest_constraint_keyword"]
+        good_answer_by_constraint = {
+            "bullet points": "- Use PostgreSQL.\n- Keep the implementation aligned with the latest preference.",
+            "numbered list": "1. Use PostgreSQL.\n2. Keep the implementation aligned with the latest preference.",
+            "five sentences": (
+                "Use PostgreSQL for the stack. "
+                "Keep the implementation simple. "
+                "Reflect the corrected preference. "
+                "Preserve the existing workflow. "
+                "Ship the smallest viable change."
+            ),
+            "concise": "Use PostgreSQL and keep the response short.",
+            "valid json": '{"database":"postgresql","note":"use the corrected preference"}',
+            "code examples": "```python\nprint('postgresql')\n```",
+            "type annotations": "def choose_db() -> str:\n    return 'postgresql'",
+            "snake_case": "use_postgresql_for_this_service",
+        }
+        good_answer = good_answer_by_constraint[str(constraint_keyword)]
+        good = grader.score_episode(episode, (), good_answer, ())
+        self.assertLess(bad.constraint_adherence, good.constraint_adherence)
 
     def test_action_parser_understands_answer_blocks(self) -> None:
         action = parse_action_block(

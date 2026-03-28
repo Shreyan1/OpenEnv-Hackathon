@@ -1,355 +1,157 @@
-# Memory Management Agent (RL + OpenEnv)
-
-A reinforcement learning system that trains an LLM-based policy to manage memory optimally during multi-turn conversations.
-
-**Core question:** Given a stream of user interactions, how should an agent allocate limited memory resources to maximize future usefulness?
-
-Instead of optimizing response quality directly, the system optimizes:
-
-> Memory policy → Better future responses
-
+---
+title: Memory Management RL Environment
+emoji: "🧠"
+colorFrom: blue
+colorTo: cyan
+sdk: docker
+pinned: false
+license: mit
 ---
 
-## Overview
+# Memory Management RL Environment
 
-Most LLM systems either store everything (wasteful, noisy) or nothing (forgetful). This project frames memory management as a long-horizon decision problem and applies RL to learn an optimal strategy under a fixed token budget.
+An OpenEnv benchmark for training agents to selectively remember, update, retrieve, and forget under a hard memory budget.
 
-The agent observes each conversation turn and decides what to **store**, **ignore**, **retrieve**, **update**, **delete**, or **answer** — getting reward signals based on how well those decisions serve downstream task success.
+## Why This Matters
 
----
+Every long-running assistant has the same failure mode: context is expensive, user state changes over time, and naive memory policies either hoard everything or forget the only detail that mattered.
 
-## Requirements
+This environment tests the production-relevant version of that problem:
 
-- Python 3.9+
-- pip
+- preferences that should be remembered
+- corrections that should supersede stale memory
+- misleading confabulations that should be ignored
+- formatting constraints that should actually be followed
+- tight budgets that force selective storage instead of dumping the whole thread
 
-### Core dependencies (for environment + baselines)
+## What Gets Tested
 
-No external dependencies are required to run the environment, baselines, and tests. The package uses only the Python standard library.
+| Capability | How it is tested |
+| --- | --- |
+| Preference recall | The user states a stack or tool preference that must appear in the final answer |
+| Correction handling | Later turns replace an earlier preference, so stale memory must be updated or ignored |
+| Noise filtering | Distractors and confabulations mention plausible technologies that are not true preferences |
+| Format compliance | The final answer is graded for bullet points, numbered lists, JSON, concise output, and similar constraints |
+| Budget management | Memory is budgeted and decays when it is not refreshed |
 
-### Optional dependencies (for RL training)
+## Task Design
 
-To connect a language model and run actual RL training via TRL:
+| Task | Difficulty | Twist |
+| --- | --- | --- |
+| `easy_preference_recall` | Easy | Turn kind is exposed |
+| `medium_preference_constraint_correction` | Medium | Turn kind is hidden, one correction, format matters |
+| `hard_full_memory_management` | Hard | Hidden turn kind, confabulation, project context, two corrections, decay |
 
-```bash
-pip install trl transformers accelerate torch
-```
+Medium and hard return `"unknown"` for `current_turn_kind`, so agents must infer intent from the message text rather than cheating off the schema.
 
-For semantic embedding-based retrieval (`EmbeddingRetrievalAgent`):
+## Reward Signal
 
-```bash
-pip install sentence-transformers
-```
+Terminal reward is composed from deterministic metrics:
 
-For experiment tracking:
-
-```bash
-pip install wandb          # Weights & Biases (optional)
-```
-
----
-
-## Installation
-
-### 1. Clone the repository
-
-```bash
-git clone <repo-url>
-cd memory-mgmt-with-rl-openenv
-```
-
-### 2. (Recommended) Create a virtual environment
-
-```bash
-python -m venv .venv
-source .venv/bin/activate    # macOS / Linux
-# .venv\Scripts\activate     # Windows
-```
-
-### 3. Install the package
-
-```bash
-pip install -e .
-```
-
-> If there is no `setup.py` yet, you can run directly from the repo root by setting `PYTHONPATH`:
-> ```bash
-> export PYTHONPATH=src   # macOS / Linux
-> set PYTHONPATH=src      # Windows
-> ```
-
-### 4. (Optional) Install RL training dependencies
-
-```bash
-pip install trl transformers accelerate torch
-```
-
----
-
-## Project Structure
-
-```
-memory-mgmt-with-rl-openenv/
-├── src/
-│   └── memory_management_agent/
-│       ├── schemas.py        # Data models: MemoryItem, Action, Observation, etc.
-│       ├── environment.py    # MemoryManagementEnv (OpenEnv-compatible)
-│       ├── episode.py        # Synthetic episode generator
-│       ├── memory_store.py   # Budget-constrained memory store
-│       ├── agents.py         # 6 baseline agents
-│       ├── grader.py         # Grader + RewardComposer
-│       ├── evaluation.py     # run_episode(), evaluate_split(), BenchmarkReport
-│       ├── training.py       # Prompt building, rollout collection, TRL scaffold
-│       ├── analysis.py       # Failure analysis, memory evolution tracking
-│       ├── review.py         # Report rendering
-│       └── utils.py          # Shared utilities
-├── tests/
-│   └── test_core.py          # Full test suite
-├── memory-management-agent.md               # Design document
-├── memory-management-agent-execution-plan.md # Implementation plan
-├── CLAUDE.md                 # Developer reference
-└── AGENTS.md                 # Agent workflow instructions
-```
-
----
-
-## Quick Start
-
-### Run the test suite
-
-```bash
-python -m unittest tests/test_core.py -v
-```
-
-### Run a single episode with a baseline agent
-
-```python
-from src.memory_management_agent import (
-    MemoryManagementEnv,
-    RuleBasedMemoryAgent,
-    run_episode,
-)
-
-env = MemoryManagementEnv(memory_budget=200, max_turns=8)
-agent = RuleBasedMemoryAgent()
-result = run_episode(agent, env, seed=42)
-
-print(f"Reward:  {result.reward:.3f}")
-print(f"Success: {result.metrics.success:.3f}")
-print(f"Answer:  {result.answer}")
-```
-
-### Compare all baselines
-
-```python
-from src.memory_management_agent import (
-    MemoryManagementEnv,
-    NoMemoryAgent, StoreEverythingAgent, PreferenceOnlyAgent,
-    KeywordRetrievalAgent, RuleBasedMemoryAgent,
-    evaluate_split,
-)
-
-env = MemoryManagementEnv(memory_budget=200)
-visible = tuple(range(1, 11))
-hidden  = tuple(range(5000, 5010))
-
-for AgentClass in [NoMemoryAgent, StoreEverythingAgent, PreferenceOnlyAgent,
-                   KeywordRetrievalAgent, RuleBasedMemoryAgent]:
-    report = evaluate_split(AgentClass(), env, visible, hidden)
-    print(f"{AgentClass.__name__:30s}  visible={report.visible.avg_reward:.3f}  hidden={report.hidden.avg_reward:.3f}")
-```
-
-### Collect rollouts for training
-
-```python
-from src.memory_management_agent import (
-    MemoryManagementEnv, RuleBasedMemoryAgent,
-    collect_rollouts, export_rollouts_jsonl,
-)
-
-env   = MemoryManagementEnv(memory_budget=200)
-agent = RuleBasedMemoryAgent()
-
-rollouts = collect_rollouts(agent, env, seeds=tuple(range(50)))
-export_rollouts_jsonl(rollouts, "rollouts.jsonl")
-print(f"Exported {len(rollouts)} rollout episodes")
-```
-
-### Run a training experiment (with TRL)
-
-```python
-from src.memory_management_agent import (
-    MemoryManagementEnv, RuleBasedMemoryAgent,
-    run_training_experiment, TrainingConfig,
-)
-
-env    = MemoryManagementEnv(memory_budget=200)
-agent  = RuleBasedMemoryAgent()
-config = TrainingConfig(algorithm="grpo", run_name="first-run")
-
-report = run_training_experiment(
-    agent, env,
-    train_seeds=tuple(range(50)),
-    visible_eval_seeds=tuple(range(50, 60)),
-    hidden_eval_seeds=tuple(range(5000, 5010)),
-    output_dir="./checkpoints",
-    config=config,
-)
-print(report)
-```
-
-### Analyze failures
-
-```python
-from src.memory_management_agent import (
-    MemoryManagementEnv, RuleBasedMemoryAgent,
-    collect_rollouts, analyze_rollouts, render_full_review,
-)
-
-env      = MemoryManagementEnv()
-rollouts = collect_rollouts(RuleBasedMemoryAgent(), env, seeds=tuple(range(20)))
-analysis = analyze_rollouts(rollouts)
-render_full_review(analysis)
-```
-
----
-
-## How It Works
-
-### Environment
-
-`MemoryManagementEnv` presents a sequence of conversation turns to the agent. Each turn, the agent observes:
-
-| Field | Description |
-|-------|-------------|
-| `current_message` | The current user turn text |
-| `conversation_window` | Recent conversation history |
-| `memory_bank` | Current contents of the memory store |
-| `budget_remaining` | Remaining token budget |
-| `step_number` | Current turn index |
-
-### Action Space
-
-| Action | Description |
-|--------|-------------|
-| `STORE(text)` | Save raw text to memory |
-| `STORE_SUMMARY(text)` | Save a compressed version |
-| `IGNORE` | Take no action this turn |
-| `RETRIEVE(ids)` | Fetch specific memory items |
-| `UPDATE(id, text)` | Replace an existing memory |
-| `DELETE(id)` | Remove a memory item |
-| `ANSWER(text)` | Produce the final response (ends episode) |
-
-### Memory Store
-
-The memory store enforces a fixed **token budget** (default: 200 tokens). When the budget is exceeded, the least-recently-used items are evicted. Duplicate detection uses normalized text comparison (Jaccard similarity).
-
-### Grading & Reward
-
-Each episode is scored on six metrics:
-
-| Metric | Weight | What it measures |
-|--------|-------:|-----------------|
-| Success | 45% | Did stored memory enable the correct final answer? |
-| Precision | 20% | Was retrieved memory relevant? |
-| Recall | 15% | Were required memories retrieved? |
-| Compactness | 10% | Was memory used efficiently? |
-| Freshness | 10% | Were stale memories updated correctly? |
-| Non-interference | — | Penalty for irrelevant memory pollution |
-
-**Reward formula:**
-
-```
-R = 0.45 × success
-  + 0.20 × precision
-  + 0.15 × recall
-  + 0.10 × compactness
-  + 0.10 × freshness
+```text
+R = 0.40 * success
+  + 0.18 * precision
+  + 0.12 * recall
+  + 0.10 * constraint_adherence
+  + 0.05 * compactness
+  + 0.05 * freshness
+  + 0.10 * non_interference
   - penalties
 ```
 
-Dense (step-level) rewards fire every turn; a delayed reward fires at episode end based on the final answer quality.
+Dense step rewards are also emitted during the episode for storing, retrieving, ignoring, updating, deleting, and answering.
 
-### Baseline Agents
-
-| Agent | Strategy |
-|-------|----------|
-| `NoMemoryAgent` | Always IGNORE — never stores anything |
-| `StoreEverythingAgent` | Always STORE — stores every turn |
-| `PreferenceOnlyAgent` | Stores turns tagged as preference/constraint/project info |
-| `KeywordRetrievalAgent` | Keyword-based heuristic retrieval |
-| `EmbeddingRetrievalAgent` | Semantic embedding retrieval |
-| `RuleBasedMemoryAgent` | Most sophisticated rule-based baseline |
-
-The RL-trained policy is expected to outperform all of these on hidden evaluation seeds.
-
-### Evaluation Design
-
-To detect reward hacking and overfitting, evaluation uses two disjoint seed ranges:
-
-- **Visible seeds** (1–4999): used for training and validation
-- **Hidden seeds** (5000+): held out for final evaluation only
-
-`generalization_gap = visible_reward − hidden_reward` — a large gap indicates the policy has overfit.
-
----
-
-## Configuration
-
-```python
-MemoryManagementEnv(
-    memory_budget=200,  # Token budget for the memory store (default: 200)
-    max_turns=8,        # Maximum turns per episode (default: 8)
-)
-
-TrainingConfig(
-    algorithm="grpo",          # "grpo" or "ppo"
-    prompt_style="structured", # Prompt format
-    max_prompt_tokens=4096,    # Max tokens in policy prompt
-    checkpoint_dir="checkpoints",
-    artifact_dir="artifacts",
-    run_name="my-experiment",
-)
-```
-
----
-
-## Development Status
-
-| Phase | Status | Description |
-|-------|--------|-------------|
-| 0 – Schemas | ✅ Done | Data model frozen |
-| 1 – Environment | ✅ Done | reset/step loop, episode generator |
-| 2 – Memory store + baselines | ✅ Done | All 6 baseline agents |
-| 3 – Grading + reward | ✅ Done | Deterministic grader, reward composer |
-| 4 – RL training scaffold | ✅ Done | Prompt format, rollout collection, TRL scaffold |
-| 5 – Analysis | ✅ Done | Failure detection, memory evolution, reporting |
-| 6 – TRL model integration | 🔄 In progress | Wire real LLM into training loop |
-| 7 – Advanced features | Planned | Vector DB, memory decay, LLM judge |
-
----
-
-## Issue Tracking
-
-This project uses **beads (`bd`)** for issue tracking.
+## Quick Start
 
 ```bash
-bd ready                    # Find available work
-bd show <id>                # View issue details
-bd update <id> --claim      # Claim an issue
-bd close <id>               # Mark complete
-bd dolt push                # Sync issue data to remote
+uv venv .venv
+uv pip install -r requirements.txt --python .venv
+.venv/bin/python -m unittest tests/test_core.py -v
 ```
 
-Run `bd prime` for the full workflow guide.
+Run the OpenEnv server:
 
----
+```bash
+.venv/bin/uvicorn server:app --host 0.0.0.0 --port 7860
+```
 
-## Key Design Decisions
+Run baseline agents:
 
-- **Deterministic seeding** — all episodes are reproducible via a seed parameter
-- **Hard token budget** — strict memory cap with LRU eviction, not soft limits
-- **Dense + delayed rewards** — step-level feedback prevents sparse-reward training problems
-- **Typed schemas** — all data flows through immutable dataclasses
-- **Hidden eval** — built-in train/visible/hidden split to catch reward hacking early
-- **Synthetic episodes** — fully controlled data generation before moving to real conversations
+```bash
+.venv/bin/python run_baseline.py
+.venv/bin/python run_baseline.py --task hard_full_memory_management
+.venv/bin/python run_baseline.py --json
+```
+
+## Python Usage
+
+```python
+from src.memory_management_agent import MemoryManagementEnv, RuleBasedMemoryAgent, run_episode
+
+env = MemoryManagementEnv(memory_budget=200)
+agent = RuleBasedMemoryAgent()
+result = run_episode(agent, env, seed=42)
+print(result.reward)
+print(result.metrics.constraint_adherence)
+```
+
+Task-aware environments:
+
+```python
+from src.memory_management_agent import TASK_HARD, generator_for_task
+from src.memory_management_agent.environment import MemoryManagementEnv
+
+env = MemoryManagementEnv(
+    generator=generator_for_task(TASK_HARD),
+    memory_budget=TASK_HARD.memory_budget,
+    max_turns=TASK_HARD.max_turns,
+    expose_turn_kind=TASK_HARD.expose_turn_kind,
+    decay_rate=TASK_HARD.decay_rate,
+)
+```
+
+## HTTP API
+
+- `GET /health`
+- `GET /tasks`
+- `POST /reset`
+- `POST /step`
+- `POST /grader`
+- `GET /baseline`
+
+Example:
+
+```bash
+curl -s http://localhost:7860/tasks
+```
+
+```bash
+curl -s -X POST http://localhost:7860/reset \
+  -H 'Content-Type: application/json' \
+  -d '{"task_id":"medium_preference_constraint_correction","seed":42}'
+```
+
+## Score Interpretation
+
+| Score | Interpretation |
+| --- | --- |
+| `0.0 - 0.2` | Agent ignores most user state or answers with stale memory |
+| `0.2 - 0.5` | Partial recall, weak correction handling, poor formatting compliance |
+| `0.5 - 0.8` | Strong recall and update behavior, but still brittle on noise or hard constraints |
+| `0.8 - 1.0` | Selective storage, fresh memory, correct updates, and compliant final answers |
+
+## Repository Layout
+
+```text
+src/memory_management_agent/
+  agents.py
+  environment.py
+  episode.py
+  grader.py
+  memory_store.py
+  tasks.py
+  training.py
+tests/test_core.py
+server.py
+openenv.yaml
+```

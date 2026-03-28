@@ -42,6 +42,7 @@ class MemoryManagementEnv:
         max_turns: int = 8,
         expose_turn_kind: bool = True,
         decay_rate: float = 0.0,
+        decay_window: int = 2,
     ):
         self.generator = generator or SyntheticEpisodeGenerator(memory_budget=memory_budget, max_turns=max_turns)
         self.grader = grader or Grader()
@@ -50,12 +51,15 @@ class MemoryManagementEnv:
         self.max_turns = max_turns
         self.expose_turn_kind = expose_turn_kind
         self.decay_rate = decay_rate
+        self.decay_window = decay_window
         self.episode: Optional[Episode] = None
         self.memory_store: Optional[MemoryStore] = None
         self._step_index = 0
         self._done = False
         self._final_answer = ""
         self._trace: list[ActionRecord] = []
+        self._episode_expose_turn_kind = expose_turn_kind
+        self._episode_decay_rate = decay_rate
 
     @property
     def trace(self) -> tuple[ActionRecord, ...]:
@@ -67,7 +71,13 @@ class MemoryManagementEnv:
 
     def reset(self, seed: Optional[int] = None) -> Observation:
         self.episode = self.generator.generate(seed=seed)
-        self.memory_store = MemoryStore(budget_tokens=self.episode.memory_budget)
+        self._episode_expose_turn_kind = bool(self.episode.metadata.get("expose_turn_kind", self.expose_turn_kind))
+        self._episode_decay_rate = float(self.episode.metadata.get("decay_rate", self.decay_rate))
+        self.memory_store = MemoryStore(
+            budget_tokens=self.episode.memory_budget,
+            decay_rate=self._episode_decay_rate,
+            decay_window=self.decay_window,
+        )
         self._step_index = 0
         self._done = False
         self._final_answer = ""
@@ -87,6 +97,9 @@ class MemoryManagementEnv:
         stored_item: Optional[MemoryItem] = None
         note = ""
 
+        if self._step_index > 0 and self._episode_decay_rate > 0.0:
+            self.memory_store.apply_decay(self._step_index)
+
         if normalized_action.type in {ActionType.STORE, ActionType.STORE_SUMMARY}:
             if normalized_action.text is None:
                 normalized_action = replace(normalized_action, text=current_turn.text)
@@ -98,7 +111,7 @@ class MemoryManagementEnv:
                 turn_index=self._step_index,
                 utility_score=utility_score,
                 source_turn=current_turn.turn_id,
-                metadata={"turn_kind": current_turn.kind},
+                metadata={"summary": normalized_action.type == ActionType.STORE_SUMMARY},
                 is_summary=normalized_action.type == ActionType.STORE_SUMMARY,
             )
             if inserted:
@@ -122,7 +135,7 @@ class MemoryManagementEnv:
                 retrieved = self.memory_store.retrieve(normalized_action.ids, turn_index=self._step_index)
             else:
                 query_text = normalized_action.text or current_turn.text
-                retrieved = self.memory_store.query(query_text, k=3)
+                retrieved = self.memory_store.query(query_text, k=3, turn_index=self._step_index)
             retrieved_items = tuple(retrieved)
             if self._retrieval_is_relevant(current_turn, retrieved_items):
                 reward += 0.12
@@ -135,7 +148,7 @@ class MemoryManagementEnv:
                 target_id,
                 normalized_action.text or current_turn.text,
                 turn_index=self._step_index,
-                metadata={"updated_from_turn_kind": current_turn.kind},
+                metadata={},
             )
             if updated is not None and current_turn.kind == "correction":
                 reward += 0.08
@@ -173,22 +186,7 @@ class MemoryManagementEnv:
             if self._step_index >= len(self.episode.turns):
                 self._done = True
 
-        if self._done and self.current_turn.kind == "final_query" and normalized_action.type == ActionType.ANSWER:
-            metrics = self.grader.score_episode(
-                self.episode,
-                self._trace,
-                self._final_answer,
-                self.memory_store.snapshot(),
-            )
-            final_reward = self.reward_composer.compose(metrics)
-            reward += final_reward
-            info = {
-                "metrics": metrics.to_dict(),
-                "final_reward": final_reward,
-                "final_answer": self._final_answer,
-                "memory_items": [item.to_dict() for item in self.memory_store.snapshot()],
-            }
-        elif self._done:
+        if self._done:
             metrics = self.grader.score_episode(
                 self.episode,
                 self._trace,
@@ -251,7 +249,18 @@ class MemoryManagementEnv:
     def _make_observation(self) -> Observation:
         if self.episode is None or self.memory_store is None:
             raise RuntimeError("Environment has not been reset.")
-        recent_turns = self.episode.turns[max(0, self._step_index - 3) : self._step_index]
+        hide_turn_kind = not self._episode_expose_turn_kind
+        recent_turns = tuple(
+            ConversationTurn(
+                turn_id=turn.turn_id,
+                text=turn.text,
+                kind="unknown" if hide_turn_kind else turn.kind,
+                memory_type=None if hide_turn_kind else turn.memory_type,
+                tags=turn.tags,
+                metadata={} if hide_turn_kind else turn.metadata,
+            )
+            for turn in self.episode.turns[max(0, self._step_index - 3) : self._step_index]
+        )
         memory_budget_remaining = max(0, self.episode.memory_budget - self.memory_store.total_tokens)
         # Strip answer-key fields so the agent cannot read the grading ground-truth.
         visible_metadata = {
@@ -260,8 +269,8 @@ class MemoryManagementEnv:
         }
         return Observation(
             current_user_message=self.current_turn.text,
-            current_turn_kind=self.current_turn.kind,
-            recent_conversation=tuple(recent_turns),
+            current_turn_kind=self.current_turn.kind if self._episode_expose_turn_kind else "unknown",
+            recent_conversation=recent_turns,
             memory_bank=self.memory_store.snapshot(),
             memory_budget_remaining=memory_budget_remaining,
             step_number=self._step_index,
@@ -273,6 +282,8 @@ class MemoryManagementEnv:
             return 0.8
         if turn.kind == "recall_check":
             return 0.5
+        if turn.kind == "confabulation":
+            return 0.0
         return 0.0
 
     def _retrieval_is_relevant(self, turn: ConversationTurn, retrieved_items: tuple[MemoryItem, ...]) -> bool:

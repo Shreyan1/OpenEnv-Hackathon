@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import sys
 import os
+import time
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -49,6 +50,7 @@ app = FastAPI(
 # ---------------------------------------------------------------------------
 
 _sessions: Dict[str, Dict[str, Any]] = {}
+_SESSION_TTL_SECONDS = 1800
 
 
 # ---------------------------------------------------------------------------
@@ -103,7 +105,20 @@ def _make_env(task_id: str) -> MemoryManagementEnv:
         generator=gen,
         memory_budget=task.memory_budget,
         max_turns=task.max_turns,
+        expose_turn_kind=task.expose_turn_kind,
+        decay_rate=task.decay_rate,
     )
+
+
+def _cleanup_expired_sessions(now: Optional[float] = None) -> None:
+    now = now if now is not None else time.time()
+    expired = [
+        session_id
+        for session_id, session in _sessions.items()
+        if now - float(session.get("last_accessed_at", session.get("created_at", now))) > _SESSION_TTL_SECONDS
+    ]
+    for session_id in expired:
+        _sessions.pop(session_id, None)
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +161,17 @@ def list_tasks() -> Dict[str, Any]:
                 "current_user_message": {"type": "string"},
                 "current_turn_kind": {
                     "type": "string",
-                    "enum": ["preference", "constraint", "correction", "project_info", "distractor", "final_query"],
+                    "enum": [
+                        "preference",
+                        "constraint",
+                        "correction",
+                        "project_info",
+                        "distractor",
+                        "confabulation",
+                        "recall_check",
+                        "final_query",
+                        "unknown",
+                    ],
                 },
                 "recent_conversation": {"type": "array"},
                 "memory_bank": {"type": "array"},
@@ -160,6 +185,7 @@ def list_tasks() -> Dict[str, Any]:
 
 @app.post("/reset", response_model=ResetResponse)
 def reset(request: ResetRequest) -> ResetResponse:
+    _cleanup_expired_sessions()
     task_id = request.task_id or ALL_TASKS[0].task_id
     if task_id not in TASK_BY_ID:
         raise HTTPException(status_code=400, detail=f"Unknown task_id: {task_id!r}. Valid: {list(TASK_BY_ID)}")
@@ -172,6 +198,8 @@ def reset(request: ResetRequest) -> ResetResponse:
         "env": env,
         "task_id": task_id,
         "done": False,
+        "created_at": time.time(),
+        "last_accessed_at": time.time(),
     }
 
     return ResetResponse(
@@ -183,6 +211,7 @@ def reset(request: ResetRequest) -> ResetResponse:
 
 @app.post("/step", response_model=StepResponse)
 def step(request: StepRequest) -> StepResponse:
+    _cleanup_expired_sessions()
     session = _sessions.get(request.session_id)
     if session is None:
         raise HTTPException(status_code=404, detail=f"Session not found: {request.session_id!r}")
@@ -203,6 +232,7 @@ def step(request: StepRequest) -> StepResponse:
 
     result = env.step(action_dict)
     session["done"] = result.done
+    session["last_accessed_at"] = time.time()
 
     return StepResponse(
         session_id=request.session_id,
@@ -215,12 +245,14 @@ def step(request: StepRequest) -> StepResponse:
 
 @app.post("/grader", response_model=GraderResponse)
 def grader(request: GraderRequest) -> GraderResponse:
+    _cleanup_expired_sessions()
     session = _sessions.get(request.session_id)
     if session is None:
         raise HTTPException(status_code=404, detail=f"Session not found: {request.session_id!r}")
 
     env: MemoryManagementEnv = session["env"]
     episode_result = env.build_episode_result()
+    session["last_accessed_at"] = time.time()
 
     return GraderResponse(
         session_id=request.session_id,

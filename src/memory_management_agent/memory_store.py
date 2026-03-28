@@ -8,8 +8,16 @@ from .utils import jaccard_similarity, normalize_text, token_count
 
 
 class MemoryStore:
-    def __init__(self, budget_tokens: int = 200):
+    def __init__(
+        self,
+        budget_tokens: int = 200,
+        *,
+        decay_rate: float = 0.0,
+        decay_window: int = 2,
+    ):
         self.budget_tokens = budget_tokens
+        self.decay_rate = decay_rate
+        self.decay_window = decay_window
         self._items: dict[str, MemoryItem] = {}
         self._counter = 0
 
@@ -122,6 +130,7 @@ class MemoryStore:
         *,
         k: int = 3,
         allowed_types: Optional[Iterable[MemoryType]] = None,
+        turn_index: Optional[int] = None,
     ) -> list[MemoryItem]:
         allowed = set(allowed_types) if allowed_types is not None else None
 
@@ -136,10 +145,25 @@ class MemoryStore:
             scored.append((score, item))
 
         scored.sort(key=lambda pair: (-pair[0], pair[1].created_at, pair[1].id))
-        return [item for _, item in scored[:k]]
+        results: list[MemoryItem] = []
+        for _, item in scored[:k]:
+            if turn_index is not None:
+                item = replace(item, last_used=turn_index)
+                self._items[item.id] = item
+            results.append(item)
+        return results
 
     def has_text(self, text: str) -> bool:
         return self._find_duplicate_id(text) is not None
+
+    def apply_decay(self, current_turn: int) -> None:
+        if self.decay_rate <= 0.0:
+            return
+        for item_id, item in list(self._items.items()):
+            if current_turn - item.last_used <= self.decay_window:
+                continue
+            new_score = max(0.0, item.utility_score - self.decay_rate)
+            self._items[item_id] = replace(item, utility_score=new_score)
 
     def _enforce_budget(self) -> list[str]:
         evicted: list[str] = []

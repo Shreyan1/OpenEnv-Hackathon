@@ -155,6 +155,7 @@ class GraderMetrics:
     success: float
     precision: float
     recall: float
+    constraint_adherence: float
     compactness: float
     freshness: float
     non_interference: float

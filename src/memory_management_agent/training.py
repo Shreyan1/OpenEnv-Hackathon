@@ -113,6 +113,7 @@ def build_policy_prompt(observation: Observation) -> PromptBundle:
             f"Current user message: {observation.current_user_message}",
             f"Memory budget remaining: {observation.memory_budget_remaining}",
             f"Step number: {observation.step_number}",
+            "If the current turn kind is 'unknown', infer intent from the message text and recent context.",
             "",
             *recent_conversation_section,
             "",
