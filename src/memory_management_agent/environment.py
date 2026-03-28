@@ -40,12 +40,16 @@ class MemoryManagementEnv:
         reward_composer: Optional[RewardComposer] = None,
         memory_budget: int = 200,
         max_turns: int = 8,
+        expose_turn_kind: bool = True,
+        decay_rate: float = 0.0,
     ):
         self.generator = generator or SyntheticEpisodeGenerator(memory_budget=memory_budget, max_turns=max_turns)
         self.grader = grader or Grader()
         self.reward_composer = reward_composer or RewardComposer()
         self.memory_budget = memory_budget
         self.max_turns = max_turns
+        self.expose_turn_kind = expose_turn_kind
+        self.decay_rate = decay_rate
         self.episode: Optional[Episode] = None
         self.memory_store: Optional[MemoryStore] = None
         self._step_index = 0

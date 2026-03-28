@@ -31,6 +31,8 @@ class TaskDefinition:
     max_turns: int
     seed_range: tuple[int, int]   # (start_inclusive, end_exclusive)
     expected_score_range: tuple[float, float]  # (random_agent_max, good_agent_min)
+    expose_turn_kind: bool = True   # if False, agent sees "unknown" instead of the real kind
+    decay_rate: float = 0.0         # per-turn memory utility decay for unaccessed items
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -42,6 +44,8 @@ class TaskDefinition:
             "max_turns": self.max_turns,
             "seed_range": list(self.seed_range),
             "expected_score_range": list(self.expected_score_range),
+            "expose_turn_kind": self.expose_turn_kind,
+            "decay_rate": self.decay_rate,
         }
 
 
@@ -67,13 +71,16 @@ TASK_MEDIUM = TaskDefinition(
         "The conversation introduces a preference and a constraint, then issues one correction "
         "that supersedes the original preference. The agent must UPDATE the stored preference "
         "(or DELETE the stale one and STORE the new one) and incorporate both the corrected "
-        "preference and the constraint in the final answer."
+        "preference and the constraint in the final answer. "
+        "Turn kind is hidden — the agent must infer from message text alone."
     ),
     difficulty="medium",
     memory_budget=200,
     max_turns=7,
     seed_range=(1, 5000),
     expected_score_range=(0.05, 0.45),
+    expose_turn_kind=False,
+    decay_rate=0.04,
 )
 
 TASK_HARD = TaskDefinition(
@@ -81,17 +88,20 @@ TASK_HARD = TaskDefinition(
     name="Full Memory Management Under Pressure",
     description=(
         "A long conversation introduces a preference, a constraint, and project info — "
-        "interspersed with multiple distractors and two corrections. "
+        "interspersed with multiple distractors, confabulation turns, and two corrections. "
         "The memory budget is tight. The agent must selectively store high-utility items, "
-        "evict or delete stale information when corrected, and produce a final answer "
-        "that references the latest preference, the constraint, and the project context. "
-        "Reward hacking via storing everything is punished by the memory bloat penalty."
+        "evict or delete stale information when corrected, distinguish first-person preferences "
+        "from third-party opinions, and produce a final answer that references the latest "
+        "preference, the constraint, and the project context. "
+        "Turn kind is hidden; memory decays if not refreshed."
     ),
     difficulty="hard",
     memory_budget=120,
     max_turns=8,
     seed_range=(1, 5000),
     expected_score_range=(0.05, 0.30),
+    expose_turn_kind=False,
+    decay_rate=0.08,
 )
 
 ALL_TASKS: List[TaskDefinition] = [TASK_EASY, TASK_MEDIUM, TASK_HARD]
