@@ -72,7 +72,7 @@ uv pip install -r requirements.txt --python .venv
 Run the OpenEnv server:
 
 ```bash
-.venv/bin/uvicorn server:app --host 0.0.0.0 --port 7860
+.venv/bin/uvicorn server.app:app --host 0.0.0.0 --port 7860
 ```
 
 Run baseline agents:
@@ -82,6 +82,40 @@ Run baseline agents:
 .venv/bin/python run_baseline.py --task hard_full_memory_management
 .venv/bin/python run_baseline.py --json
 ```
+
+## LLM Agent Evaluation
+
+Run Claude or any OpenRouter model against the environment via the OpenEnv WebSocket:
+
+```bash
+# Anthropic (default model: claude-haiku-4-5-20251001)
+ANTHROPIC_API_KEY=sk-ant-... .venv/bin/python run_llm_agent.py
+
+# OpenRouter (any model on their platform)
+OPENROUTER_API_KEY=sk-or-... .venv/bin/python run_llm_agent.py \
+  --provider openrouter --model anthropic/claude-haiku-4-5
+
+# Single task, specific seeds
+ANTHROPIC_API_KEY=... .venv/bin/python run_llm_agent.py \
+  --task easy_preference_recall --seeds 42 43 44
+
+# Against the live HF Space
+ANTHROPIC_API_KEY=... .venv/bin/python run_llm_agent.py \
+  --server https://chiragsehra-memory-mgmt-rl.hf.space
+
+# JSON output for programmatic use
+ANTHROPIC_API_KEY=... .venv/bin/python run_llm_agent.py --json
+```
+
+### Benchmark Results (claude-haiku-4-5, 5 seeds)
+
+| Task | LLM avg | rule_based avg | Delta |
+| --- | --- | --- | --- |
+| `easy_preference_recall` | 0.649 | 0.648 | +0.001 |
+| `medium_preference_constraint_correction` | 0.868 | 0.934 | -0.065 |
+| `hard_full_memory_management` | **0.908** | 0.663 | **+0.245** |
+
+The LLM agent exceeds the rule-based baseline on the hard task by a significant margin.
 
 ## Python Usage
 
@@ -118,6 +152,7 @@ env = MemoryManagementEnv(
 - `POST /step`
 - `POST /grader`
 - `GET /baseline`
+- `WS /ws` — OpenEnv-native WebSocket endpoint
 
 Example:
 
@@ -144,14 +179,19 @@ curl -s -X POST http://localhost:7860/reset \
 
 ```text
 src/memory_management_agent/
-  agents.py
-  environment.py
-  episode.py
-  grader.py
-  memory_store.py
-  tasks.py
-  training.py
+  agents.py         # baseline heuristic agents
+  environment.py    # reset/step loop
+  episode.py        # conversation template pools
+  grader.py         # deterministic reward composer
+  memory_store.py   # budgeted memory with decay
+  tasks.py          # easy / medium / hard task generators
+  training.py       # prompt building and rollout collection
+server/
+  app.py            # FastAPI server (HTTP + WebSocket /ws)
 tests/test_core.py
-server.py
-openenv.yaml
+run_baseline.py     # rule-based baseline evaluation
+run_llm_agent.py    # LLM agent evaluation (Anthropic / OpenRouter)
+client.py           # HTTP client helper
+models.py           # shared Pydantic request/response models
+openenv.yaml        # OpenEnv manifest
 ```

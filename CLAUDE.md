@@ -25,9 +25,14 @@ src/memory_management_agent/
 ├── review.py         # text report rendering
 └── utils.py          # tokenization and similarity helpers
 
+server/
+└── app.py            # FastAPI server — HTTP endpoints + WebSocket /ws
+
 tests/test_core.py    # unittest suite
-server.py             # FastAPI OpenEnv server
-run_baseline.py       # baseline evaluation script
+run_baseline.py       # rule-based baseline evaluation
+run_llm_agent.py      # LLM agent evaluation (Anthropic / OpenRouter)
+client.py             # HTTP client helper
+models.py             # shared Pydantic request/response models
 openenv.yaml          # OpenEnv manifest
 README.md             # HF Space / project pitch
 ```
@@ -102,9 +107,18 @@ Penalties include contradiction handling failures and memory bloat.
 ## Development Commands
 
 ```bash
+# Tests
 .venv/bin/python -m unittest tests/test_core.py -v
+
+# Baseline agents
 .venv/bin/python run_baseline.py
-.venv/bin/uvicorn server:app --host 0.0.0.0 --port 7860
+
+# Server
+.venv/bin/uvicorn server.app:app --host 0.0.0.0 --port 7860
+
+# LLM agent evaluation
+ANTHROPIC_API_KEY=... .venv/bin/python run_llm_agent.py
+OPENROUTER_API_KEY=... .venv/bin/python run_llm_agent.py --provider openrouter --model anthropic/claude-haiku-4-5
 ```
 
 ## Example Usage
