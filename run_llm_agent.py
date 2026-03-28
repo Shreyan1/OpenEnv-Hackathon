@@ -169,7 +169,7 @@ def _build_prompt_from_dict(obs: Dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Episode runner
+# Episode runner — WebSocket transport
 # ---------------------------------------------------------------------------
 
 async def run_episode(
@@ -206,6 +206,66 @@ async def run_episode(
             "final_answer": env.last_final_answer,
             "metrics": env.last_metrics,
         }
+
+
+# ---------------------------------------------------------------------------
+# Episode runner — HTTP transport (fallback for proxies that block WebSocket)
+# ---------------------------------------------------------------------------
+
+def _http_post(url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Synchronous HTTP POST helper using stdlib only."""
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=120) as r:
+        return json.loads(r.read())
+
+
+async def run_episode_http(
+    server_url: str,
+    llm: Any,
+    task_id: str,
+    seed: int,
+) -> Dict[str, Any]:
+    """Run one episode via HTTP REST endpoints (/reset, /step, /grader)."""
+    base = server_url.rstrip("/")
+
+    reset_resp = _http_post(f"{base}/reset", {"task_id": task_id, "seed": seed})
+    session_id = reset_resp["session_id"]
+    obs = reset_resp["observation"]
+    steps = 0
+    done = False
+    last_reward = 0.0
+
+    while not done:
+        prompt = _build_prompt_from_dict(obs)
+        try:
+            llm_text = await llm.complete(prompt, max_tokens=512)
+        except Exception as exc:
+            llm_text = f"ACTION: ignore\nTEXT: (error: {exc})\nIDS:"
+
+        action_dict = parse_action_block(llm_text).to_dict()
+        step_resp = _http_post(f"{base}/step", {"session_id": session_id, "action": action_dict})
+        done = step_resp.get("done", False)
+        last_reward = step_resp.get("reward", 0.0)
+        if step_resp.get("observation"):
+            obs = step_resp["observation"]
+        steps += 1
+
+    grader_resp = _http_post(f"{base}/grader", {"session_id": session_id})
+    return {
+        "task_id": task_id,
+        "seed": seed,
+        "score": grader_resp.get("score", 0.0),
+        "reward": last_reward,
+        "steps": steps,
+        "final_answer": grader_resp.get("final_answer", ""),
+        "metrics": grader_resp.get("metrics", {}),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -249,9 +309,16 @@ async def _run_all(args: argparse.Namespace) -> int:
     tasks = [TASK_BY_ID[args.task]] if args.task else ALL_TASKS
     seeds: List[int] = args.seeds
 
+    # Choose transport: explicit flag, or auto-detect HF Space URLs
+    use_http = args.transport == "http" or (
+        args.transport == "auto" and ".hf.space" in args.server
+    )
+    _run_ep = run_episode_http if use_http else run_episode
+    transport_label = "http" if use_http else "websocket"
+
     # Fetch rule_based baseline for comparison
     if not args.json:
-        print(f"Fetching rule_based baseline from {args.server}...")
+        print(f"Fetching rule_based baseline from {args.server}... (transport: {transport_label})")
     baseline = _fetch_baseline_scores(args.server)
 
     all_results: Dict[str, Any] = {}
@@ -261,7 +328,7 @@ async def _run_all(args: argparse.Namespace) -> int:
         seed_results: List[Dict[str, Any]] = []
 
         for seed in seeds:
-            ep = await run_episode(args.server, llm, task.task_id, seed)
+            ep = await _run_ep(args.server, llm, task.task_id, seed)
             task_scores.append(ep["score"])
             seed_results.append(ep)
 
@@ -290,7 +357,7 @@ async def _run_all(args: argparse.Namespace) -> int:
     print("=" * 70)
     print(f"Memory Management RL — LLM Agent Evaluation")
     print(f"Provider: {args.provider}  Model: {args.model}")
-    print(f"Server: {args.server}")
+    print(f"Server: {args.server}  Transport: {transport_label}")
     print(f"Seeds:  {seeds}")
     print("=" * 70)
 
@@ -334,6 +401,12 @@ def main() -> int:
         help="LLM provider (default: anthropic)",
     )
     parser.add_argument("--json", action="store_true", help="Output results as JSON")
+    parser.add_argument(
+        "--transport",
+        default="auto",
+        choices=["auto", "websocket", "http"],
+        help="Transport: auto (default) uses HTTP for *.hf.space, WebSocket otherwise",
+    )
     args = parser.parse_args()
 
     return asyncio.run(_run_all(args))
