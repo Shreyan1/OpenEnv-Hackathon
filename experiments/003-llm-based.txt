@@ -1,0 +1,60 @@
+
+======================================================================
+Memory Management RL — LLM Agent Evaluation
+Provider: openrouter  Model: anthropic/claude-haiku-4-5
+Server: http://localhost:7860
+Seeds:  [42, 43, 44, 45, 46]
+======================================================================
+
+Task: Single Preference Recall  [EASY]
+  task_id: easy_preference_recall
+
+  Metric                      LLM  rule_based
+  ----------------------  --------  ----------
+  Average                   0.649      0.6484
+  Min                       0.648
+  Max                       0.650
+  Delta vs rule_based      +0.001 [ABOVE BASELINE]
+
+  Per-seed scores:
+    seed 42: 0.649  (8 steps)
+    seed 43: 0.648  (8 steps)
+    seed 44: 0.648  (8 steps)
+    seed 45: 0.649  (8 steps)
+    seed 46: 0.650  (8 steps)
+
+Task: Preference + Constraint with Correction  [MEDIUM]
+  task_id: medium_preference_constraint_correction
+
+  Metric                      LLM  rule_based
+  ----------------------  --------  ----------
+  Average                   0.759      0.9337
+  Min                       0.439
+  Max                       0.939
+  Delta vs rule_based      -0.175 [BELOW BASELINE]
+
+  Per-seed scores:
+    seed 42: 0.738  (8 steps)
+    seed 43: 0.938  (8 steps)
+    seed 44: 0.939  (8 steps)
+    seed 45: 0.439  (8 steps)
+    seed 46: 0.740  (8 steps)
+
+Task: Full Memory Management Under Pressure  [HARD]
+  task_id: hard_full_memory_management
+
+  Metric                      LLM  rule_based
+  ----------------------  --------  ----------
+  Average                   0.734      0.6633
+  Min                       0.314
+  Max                       0.897
+  Delta vs rule_based      +0.071 [ABOVE BASELINE]
+
+  Per-seed scores:
+    seed 42: 0.897  (8 steps)
+    seed 43: 0.894  (8 steps)
+    seed 44: 0.782  (8 steps)
+    seed 45: 0.314  (8 steps)
+    seed 46: 0.783  (8 steps)
+
+======================================================================
