@@ -10,43 +10,43 @@ license: mit
 
 # Memory Management RL Environment
 
-An OpenEnv benchmark for training agents to selectively remember, update, retrieve, and forget under a hard memory budget.
+An OpenEnv benchmark for training agents to selectively remember, update, retrieve, and forget under a fixed memory budget.
 
 ## Why This Matters
 
-Every long-running assistant has the same failure mode: context is expensive, user state changes over time, and naive memory policies either hoard everything or forget the only detail that mattered.
+Long-running assistants constantly hit the same wall: context is expensive, user state changes, and simple memory policies either hoard everything or drop the one thing that actually mattered. This environment puts that problem front and center with realistic multi-turn conversations, tight budgets, and adversarial noise.
 
-This environment tests the production-relevant version of that problem:
+Specifically, agents are tested on:
 
-- preferences that should be remembered
-- corrections that should supersede stale memory
-- misleading confabulations that should be ignored
-- formatting constraints that should actually be followed
-- tight budgets that force selective storage instead of dumping the whole thread
+- preferences that need to be stored and recalled later
+- corrections that should replace stale memory, not stack on top of it
+- confabulations and distractors that look relevant but should be ignored
+- formatting constraints that the final answer must actually follow
+- memory budgets that force prioritization rather than brute-force storage
 
 ## What Gets Tested
 
-| Capability | How it is tested |
+| Capability | How |
 | --- | --- |
-| Preference recall | The user states a stack or tool preference that must appear in the final answer |
-| Correction handling | Later turns replace an earlier preference, so stale memory must be updated or ignored |
-| Noise filtering | Distractors and confabulations mention plausible technologies that are not true preferences |
-| Format compliance | The final answer is graded for bullet points, numbered lists, JSON, concise output, and similar constraints |
-| Budget management | Memory is budgeted and decays when it is not refreshed |
+| Preference recall | User states a stack or tool preference; it must show up in the final answer |
+| Correction handling | A later turn replaces an earlier preference; stale memory must be updated |
+| Noise filtering | Distractors and confabulations mention plausible techs that are not real preferences |
+| Format compliance | Final answer graded against bullet points, numbered lists, JSON, concise output, etc. |
+| Budget management | Memory is token-budgeted and decays if not refreshed |
 
-## Task Design
+## Tasks
 
-| Task | Difficulty | Twist |
+| Task | Difficulty | Notes |
 | --- | --- | --- |
 | `easy_preference_recall` | Easy | Turn kind is exposed |
-| `medium_preference_constraint_correction` | Medium | Turn kind is hidden, one correction, format matters |
-| `hard_full_memory_management` | Hard | Hidden turn kind, confabulation, project context, two corrections, decay |
+| `medium_preference_constraint_correction` | Medium | Turn kind hidden, one correction, format matters |
+| `hard_full_memory_management` | Hard | Turn kind hidden, confabulation, project context, two corrections, decay |
 
-Medium and hard return `"unknown"` for `current_turn_kind`, so agents must infer intent from the message text rather than cheating off the schema.
+On medium and hard, `current_turn_kind` returns `"unknown"`. Agents have to read the message and figure out intent themselves rather than relying on the label.
 
-## Reward Signal
+## Reward
 
-Terminal reward is composed from deterministic metrics:
+Terminal reward comes from deterministic grader metrics:
 
 ```text
 R = 0.40 * success
@@ -59,7 +59,7 @@ R = 0.40 * success
   - penalties
 ```
 
-Dense step rewards are also emitted during the episode for storing, retrieving, ignoring, updating, deleting, and answering.
+Dense step rewards fire on each store, retrieve, ignore, update, delete, and answer action during the episode.
 
 ## Quick Start
 
@@ -69,7 +69,7 @@ uv pip install -r requirements.txt --python .venv
 .venv/bin/python -m unittest tests/test_core.py -v
 ```
 
-Run the OpenEnv server:
+Start the server:
 
 ```bash
 .venv/bin/uvicorn server.app:app --host 0.0.0.0 --port 7860
@@ -85,13 +85,11 @@ Run baseline agents:
 
 ## LLM Agent Evaluation
 
-Run Claude or any OpenRouter model against the environment via the OpenEnv WebSocket:
-
 ```bash
-# Anthropic (default model: claude-haiku-4-5-20251001)
+# Anthropic
 ANTHROPIC_API_KEY=sk-ant-... .venv/bin/python run_llm_agent.py
 
-# OpenRouter (any model on their platform)
+# OpenRouter
 OPENROUTER_API_KEY=sk-or-... .venv/bin/python run_llm_agent.py \
   --provider openrouter --model anthropic/claude-haiku-4-5
 
@@ -99,11 +97,7 @@ OPENROUTER_API_KEY=sk-or-... .venv/bin/python run_llm_agent.py \
 ANTHROPIC_API_KEY=... .venv/bin/python run_llm_agent.py \
   --task easy_preference_recall --seeds 42 43 44
 
-# Against the live HF Space
-ANTHROPIC_API_KEY=... .venv/bin/python run_llm_agent.py \
-  --server https://chiragsehra-memory-mgmt-rl.hf.space
-
-# JSON output for programmatic use
+# JSON output
 ANTHROPIC_API_KEY=... .venv/bin/python run_llm_agent.py --json
 ```
 
@@ -115,7 +109,7 @@ ANTHROPIC_API_KEY=... .venv/bin/python run_llm_agent.py --json
 | `medium_preference_constraint_correction` | 0.868 | 0.934 | -0.065 |
 | `hard_full_memory_management` | **0.908** | 0.663 | **+0.245** |
 
-The LLM agent exceeds the rule-based baseline on the hard task by a significant margin.
+The LLM agent beats the rule-based baseline by a wide margin on the hard task.
 
 ## Python Usage
 
@@ -129,7 +123,7 @@ print(result.reward)
 print(result.metrics.constraint_adherence)
 ```
 
-Task-aware environments:
+Task-aware setup:
 
 ```python
 from src.memory_management_agent import TASK_HARD, generator_for_task
@@ -152,15 +146,11 @@ env = MemoryManagementEnv(
 - `POST /step`
 - `POST /grader`
 - `GET /baseline`
-- `WS /ws` — OpenEnv-native WebSocket endpoint
-
-Example:
+- `WS /ws` (OpenEnv WebSocket)
 
 ```bash
 curl -s http://localhost:7860/tasks
-```
 
-```bash
 curl -s -X POST http://localhost:7860/reset \
   -H 'Content-Type: application/json' \
   -d '{"task_id":"medium_preference_constraint_correction","seed":42}'
@@ -168,12 +158,12 @@ curl -s -X POST http://localhost:7860/reset \
 
 ## Score Interpretation
 
-| Score | Interpretation |
+| Score | What it means |
 | --- | --- |
-| `0.0 - 0.2` | Agent ignores most user state or answers with stale memory |
-| `0.2 - 0.5` | Partial recall, weak correction handling, poor formatting compliance |
-| `0.5 - 0.8` | Strong recall and update behavior, but still brittle on noise or hard constraints |
-| `0.8 - 1.0` | Selective storage, fresh memory, correct updates, and compliant final answers |
+| 0.0 - 0.2 | Agent mostly ignores user state or answers from stale memory |
+| 0.2 - 0.5 | Partial recall, weak correction handling, poor format compliance |
+| 0.5 - 0.8 | Solid recall and updates, but brittle on noise or harder constraints |
+| 0.8 - 1.0 | Selective storage, fresh memory, correct updates, format-compliant answers |
 
 ## Repository Layout
 
@@ -187,11 +177,10 @@ src/memory_management_agent/
   tasks.py          # easy / medium / hard task generators
   training.py       # prompt building and rollout collection
 server/
-  app.py            # FastAPI server (HTTP + WebSocket /ws)
+  app.py            # FastAPI server (HTTP + WebSocket)
 tests/test_core.py
 run_baseline.py     # rule-based baseline evaluation
 run_llm_agent.py    # LLM agent evaluation (Anthropic / OpenRouter)
-client.py           # HTTP client helper
-models.py           # shared Pydantic request/response models
+inference.py        # submission inference script
 openenv.yaml        # OpenEnv manifest
 ```
