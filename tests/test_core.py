@@ -4,6 +4,11 @@ import os
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
+from unittest import mock
+import importlib
+import types
 
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -29,6 +34,25 @@ from memory_management_agent.training import TrainingConfig, run_training_experi
 from memory_management_agent.analysis import analyze_rollouts, memory_evolution_text  # noqa: E402
 from memory_management_agent.review import render_failure_cases, render_full_review  # noqa: E402
 from memory_management_agent.training import collect_rollouts  # noqa: E402
+
+
+def _import_inference_with_fake_openai() -> types.ModuleType:
+    fake_openai = types.ModuleType("openai")
+
+    class DummyOpenAI:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self.chat = types.SimpleNamespace(
+                completions=types.SimpleNamespace(
+                    create=lambda **_kwargs: types.SimpleNamespace(
+                        choices=[types.SimpleNamespace(message=types.SimpleNamespace(content="ACTION: ignore\nTEXT:\nIDS:"))]
+                    )
+                )
+            )
+
+    fake_openai.OpenAI = DummyOpenAI  # type: ignore[attr-defined]
+    sys.modules.pop("inference", None)
+    with mock.patch.dict(sys.modules, {"openai": fake_openai}):
+        return importlib.import_module("inference")
 
 
 class EpisodeGenerationTests(unittest.TestCase):
@@ -251,6 +275,66 @@ class TrainingScaffoldTests(unittest.TestCase):
             self.assertIn("Generalization gap", text)
             analysis = analyze_rollouts(collect_rollouts(RuleBasedMemoryAgent(), env, seeds=(3,)))
             self.assertIn("Failure cases", render_failure_cases(analysis))
+
+
+class LoggingTests(unittest.TestCase):
+    def test_inference_parser_maps_invalid_turn_kind_to_safe_action(self) -> None:
+        inference = _import_inference_with_fake_openai()
+        parsed = inference._parse_action("ACTION: recall_check\nTEXT:\nIDS:")
+        self.assertEqual(parsed["type"], "retrieve")
+
+    def test_inference_main_emits_start_step_end_logs(self) -> None:
+        inference = _import_inference_with_fake_openai()
+        stdout = StringIO()
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "HF_TOKEN": "test-token",
+                    "API_BASE_URL": "https://example.invalid/v1",
+                    "MODEL_NAME": "fake-model",
+                },
+                clear=False,
+            ),
+            mock.patch.object(inference, "HF_TOKEN", "test-token"),
+            mock.patch.object(inference, "API_BASE_URL", "https://example.invalid/v1"),
+            mock.patch.object(inference, "MODEL_NAME", "fake-model"),
+            mock.patch.object(inference, "_run_episode", return_value=0.5),
+            redirect_stdout(stdout),
+        ):
+            inference.main()
+
+        output = stdout.getvalue()
+        self.assertIn("[START] event=\"inference_run\"", output)
+        self.assertIn("[START] event=\"task_run\"", output)
+        self.assertIn("[STEP] event=\"seed_result\"", output)
+        self.assertIn("[END] event=\"task_run\"", output)
+        self.assertIn("[END] event=\"inference_run\"", output)
+
+    def test_server_routes_emit_start_step_end_logs(self) -> None:
+        from server.app import GraderRequest, ResetRequest, StepRequest, grader, reset, step
+
+        stdout = StringIO()
+        with redirect_stdout(stdout):
+            reset_response = reset(ResetRequest(task_id="easy_preference_recall", seed=42))
+            session_id = reset_response.session_id
+
+            step_response = step(StepRequest(session_id=session_id, action={"type": "ignore"}))
+            self.assertFalse(step_response.done)
+
+            grader_response = grader(GraderRequest(session_id=session_id))
+            self.assertEqual(grader_response.task_id, "easy_preference_recall")
+
+        output = stdout.getvalue()
+        self.assertIn("[START] event=\"http_reset\"", output)
+        self.assertIn("[STEP] event=\"http_reset_session_created\"", output)
+        self.assertIn("[END] event=\"http_reset\"", output)
+        self.assertIn("[START] event=\"http_step\"", output)
+        self.assertIn("[STEP] event=\"http_step_action_received\"", output)
+        self.assertIn("[END] event=\"http_step\"", output)
+        self.assertIn("[START] event=\"http_grader\"", output)
+        self.assertIn("[STEP] event=\"http_grader_result\"", output)
+        self.assertIn("[END] event=\"http_grader\"", output)
 
 
 if __name__ == "__main__":

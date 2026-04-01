@@ -13,6 +13,7 @@ import os
 import re
 import sys
 import textwrap
+import time
 from typing import Any, Dict, List
 
 from openai import OpenAI
@@ -20,6 +21,7 @@ from openai import OpenAI
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.memory_management_agent.environment import MemoryManagementEnv
+from src.memory_management_agent.logging_utils import elapsed_ms, log_event, now_monotonic
 from src.memory_management_agent.tasks import ALL_TASKS, generator_for_task
 
 # ---------------------------------------------------------------------------
@@ -120,6 +122,18 @@ def _build_prompt(obs: Dict[str, Any]) -> str:
 _ACTION_RE = re.compile(r"ACTION:\s*(\w+)", re.IGNORECASE)
 _TEXT_RE = re.compile(r"TEXT:\s*(.*?)(?=\nIDS:|\Z)", re.DOTALL | re.IGNORECASE)
 _IDS_RE = re.compile(r"IDS:\s*(.*)", re.IGNORECASE)
+_VALID_ACTIONS = {"store", "store_summary", "ignore", "retrieve", "update", "delete", "answer"}
+_ACTION_ALIASES = {
+    "recall_check": "retrieve",
+    "project_info": "store",
+    "preference": "store",
+    "constraint": "store",
+    "correction": "update",
+    "final_query": "answer",
+    "distractor": "ignore",
+    "confabulation": "ignore",
+    "unknown": "ignore",
+}
 
 
 def _parse_action(text: str) -> Dict[str, Any]:
@@ -127,7 +141,11 @@ def _parse_action(text: str) -> Dict[str, Any]:
     text_match = _TEXT_RE.search(text)
     ids_match = _IDS_RE.search(text)
 
-    action_type = action_match.group(1).lower() if action_match else "ignore"
+    raw_action_type = action_match.group(1).lower() if action_match else "ignore"
+    action_type = _ACTION_ALIASES.get(raw_action_type, raw_action_type)
+    if action_type not in _VALID_ACTIONS:
+        log_event("STEP", "invalid_action_type", raw_action_type=raw_action_type, fallback_action="ignore")
+        action_type = "ignore"
     payload_text = text_match.group(1).strip() if text_match else ""
     ids_raw = ids_match.group(1).strip() if ids_match else ""
     ids = [i.strip() for i in ids_raw.split(",") if i.strip()] if ids_raw else []
@@ -142,6 +160,7 @@ def _run_episode(env: MemoryManagementEnv, client: OpenAI, seed: int) -> float:
     obs = env.reset(seed=seed)
     obs_dict = obs.to_dict()
     done = False
+    step_count = 0
 
     while not done:
         user_prompt = _build_prompt(obs_dict)
@@ -157,16 +176,25 @@ def _run_episode(env: MemoryManagementEnv, client: OpenAI, seed: int) -> float:
             )
             response_text = completion.choices[0].message.content or ""
         except Exception as exc:
+            log_event("STEP", "llm_call_failed", seed=seed, error=str(exc))
             print(f"  [warn] LLM call failed: {exc}", file=sys.stderr)
             response_text = "ACTION: ignore\nTEXT:\nIDS:"
 
         action_dict = _parse_action(response_text)
         result = env.step(action_dict)
         done = result.done
+        step_count += 1
         if result.observation is not None:
             obs_dict = result.observation.to_dict()
 
     ep_result = env.build_episode_result()
+    log_event(
+        "STEP",
+        "seed_run",
+        seed=seed,
+        step_count=step_count,
+        score=round(max(0.0, min(1.0, ep_result.reward)), 4),
+    )
     return max(0.0, min(1.0, ep_result.reward))
 
 # ---------------------------------------------------------------------------
@@ -174,11 +202,21 @@ def _run_episode(env: MemoryManagementEnv, client: OpenAI, seed: int) -> float:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    run_started_at = now_monotonic()
     if not HF_TOKEN:
+        log_event("END", "inference_run", status="error", error="HF_TOKEN environment variable is not set")
         print("ERROR: HF_TOKEN environment variable is not set.", file=sys.stderr)
         sys.exit(1)
 
     client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
+    log_event(
+        "START",
+        "inference_run",
+        model_name=MODEL_NAME,
+        api_base_url=API_BASE_URL,
+        seeds=SEEDS,
+        task_count=len(ALL_TASKS),
+    )
 
     print(f"Model:    {MODEL_NAME}")
     print(f"API Base: {API_BASE_URL}")
@@ -188,6 +226,8 @@ def main() -> None:
     all_scores: Dict[str, Any] = {}
 
     for task in ALL_TASKS:
+        task_started_at = now_monotonic()
+        log_event("START", "task_run", task_id=task.task_id, difficulty=task.difficulty)
         print(f"Task: {task.task_id}  [{task.difficulty}]")
         env = MemoryManagementEnv(
             generator=generator_for_task(task),
@@ -199,8 +239,17 @@ def main() -> None:
 
         scores: List[float] = []
         for seed in SEEDS:
+            seed_started_at = time.perf_counter()
             score = _run_episode(env, client, seed)
             scores.append(score)
+            log_event(
+                "STEP",
+                "seed_result",
+                task_id=task.task_id,
+                seed=seed,
+                score=round(score, 4),
+                elapsed_ms=elapsed_ms(seed_started_at),
+            )
             print(f"  seed={seed}  score={score:.4f}")
 
         avg = sum(scores) / len(scores)
@@ -208,6 +257,14 @@ def main() -> None:
             "average": round(avg, 4),
             "scores": [round(s, 4) for s in scores],
         }
+        log_event(
+            "END",
+            "task_run",
+            task_id=task.task_id,
+            average=round(avg, 4),
+            elapsed_ms=elapsed_ms(task_started_at),
+            status="ok",
+        )
         print(f"  → average: {avg:.4f}")
         print()
 
@@ -221,6 +278,13 @@ def main() -> None:
         for s in result["scores"]:
             assert 0.0 <= s <= 1.0, f"Score out of range: {task_id} = {s}"
     print("All scores in [0.0, 1.0] range. OK")
+    log_event(
+        "END",
+        "inference_run",
+        status="ok",
+        task_ids=list(all_scores.keys()),
+        elapsed_ms=elapsed_ms(run_started_at),
+    )
 
 
 if __name__ == "__main__":

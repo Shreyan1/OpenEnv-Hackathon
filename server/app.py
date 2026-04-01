@@ -35,6 +35,7 @@ from src.memory_management_agent import (
     run_episode,
 )
 from src.memory_management_agent.environment import MemoryManagementEnv
+from src.memory_management_agent.logging_utils import elapsed_ms, log_event, now_monotonic
 from src.memory_management_agent.schemas import Action, ActionType
 from src.memory_management_agent.tasks import generator_for_task
 
@@ -188,82 +189,157 @@ def list_tasks() -> Dict[str, Any]:
 
 @app.post("/reset", response_model=ResetResponse)
 def reset(request: ResetRequest) -> ResetResponse:
-    _cleanup_expired_sessions()
+    started_at = now_monotonic()
+    status = "ok"
     task_id = request.task_id or ALL_TASKS[0].task_id
-    if task_id not in TASK_BY_ID:
-        raise HTTPException(status_code=400, detail=f"Unknown task_id: {task_id!r}. Valid: {list(TASK_BY_ID)}")
+    session_id = request.session_id
+    log_event("START", "http_reset", task_id=task_id, session_id=session_id)
+    _cleanup_expired_sessions()
+    try:
+        if task_id not in TASK_BY_ID:
+            status = "error"
+            raise HTTPException(status_code=400, detail=f"Unknown task_id: {task_id!r}. Valid: {list(TASK_BY_ID)}")
 
-    session_id = request.session_id or str(uuid.uuid4())
-    env = _make_env(task_id)
-    observation = env.reset(seed=request.seed)
+        session_id = request.session_id or str(uuid.uuid4())
+        env = _make_env(task_id)
+        observation = env.reset(seed=request.seed)
 
-    _sessions[session_id] = {
-        "env": env,
-        "task_id": task_id,
-        "done": False,
-        "created_at": time.time(),
-        "last_accessed_at": time.time(),
-    }
-
-    return ResetResponse(
-        session_id=session_id,
-        task_id=task_id,
-        observation=observation.to_dict(),
-    )
+        _sessions[session_id] = {
+            "env": env,
+            "task_id": task_id,
+            "done": False,
+            "created_at": time.time(),
+            "last_accessed_at": time.time(),
+        }
+        log_event("STEP", "http_reset_session_created", task_id=task_id, session_id=session_id, seed=request.seed)
+        return ResetResponse(
+            session_id=session_id,
+            task_id=task_id,
+            observation=observation.to_dict(),
+        )
+    except Exception:
+        status = "error"
+        raise
+    finally:
+        log_event(
+            "END",
+            "http_reset",
+            task_id=task_id,
+            session_id=session_id,
+            status=status,
+            elapsed_ms=elapsed_ms(started_at),
+        )
 
 
 @app.post("/step", response_model=StepResponse)
 def step(request: StepRequest) -> StepResponse:
+    started_at = now_monotonic()
+    status = "ok"
+    task_id: Optional[str] = None
+    log_event("START", "http_step", session_id=request.session_id)
     _cleanup_expired_sessions()
-    session = _sessions.get(request.session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail=f"Session not found: {request.session_id!r}")
-    if session["done"]:
-        raise HTTPException(status_code=400, detail="Episode is already done. Call /reset to start a new one.")
-
-    env: MemoryManagementEnv = session["env"]
-    action_dict = request.action
-
-    # Validate action type
     try:
-        ActionType(action_dict.get("type", ""))
-    except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid action type {action_dict.get('type')!r}. Valid: {[a.value for a in ActionType]}",
+        session = _sessions.get(request.session_id)
+        if session is None:
+            status = "error"
+            raise HTTPException(status_code=404, detail=f"Session not found: {request.session_id!r}")
+        if session["done"]:
+            status = "error"
+            raise HTTPException(status_code=400, detail="Episode is already done. Call /reset to start a new one.")
+
+        task_id = session["task_id"]
+        env: MemoryManagementEnv = session["env"]
+        action_dict = request.action
+        log_event(
+            "STEP",
+            "http_step_action_received",
+            session_id=request.session_id,
+            task_id=task_id,
+            action_type=action_dict.get("type"),
         )
 
-    result = env.step(action_dict)
-    session["done"] = result.done
-    session["last_accessed_at"] = time.time()
+        # Validate action type
+        try:
+            ActionType(action_dict.get("type", ""))
+        except ValueError:
+            status = "error"
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid action type {action_dict.get('type')!r}. Valid: {[a.value for a in ActionType]}",
+            )
 
-    return StepResponse(
-        session_id=request.session_id,
-        observation=result.observation.to_dict() if result.observation else None,
-        reward=result.reward,
-        done=result.done,
-        info=result.info,
-    )
+        result = env.step(action_dict)
+        session["done"] = result.done
+        session["last_accessed_at"] = time.time()
+        log_event(
+            "STEP",
+            "http_step_result",
+            session_id=request.session_id,
+            task_id=task_id,
+            done=result.done,
+            reward=round(result.reward, 4),
+        )
+
+        return StepResponse(
+            session_id=request.session_id,
+            observation=result.observation.to_dict() if result.observation else None,
+            reward=result.reward,
+            done=result.done,
+            info=result.info,
+        )
+    except Exception:
+        status = "error"
+        raise
+    finally:
+        log_event(
+            "END",
+            "http_step",
+            session_id=request.session_id,
+            task_id=task_id,
+            status=status,
+            elapsed_ms=elapsed_ms(started_at),
+        )
 
 
 @app.post("/grader", response_model=GraderResponse)
 def grader(request: GraderRequest) -> GraderResponse:
+    started_at = now_monotonic()
+    status = "ok"
+    task_id: Optional[str] = None
+    log_event("START", "http_grader", session_id=request.session_id)
     _cleanup_expired_sessions()
-    session = _sessions.get(request.session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail=f"Session not found: {request.session_id!r}")
+    try:
+        session = _sessions.get(request.session_id)
+        if session is None:
+            status = "error"
+            raise HTTPException(status_code=404, detail=f"Session not found: {request.session_id!r}")
 
-    env: MemoryManagementEnv = session["env"]
-    episode_result = env.build_episode_result()
-    session["last_accessed_at"] = time.time()
+        task_id = session["task_id"]
+        env: MemoryManagementEnv = session["env"]
+        episode_result = env.build_episode_result()
+        session["last_accessed_at"] = time.time()
+        score = max(0.0, min(1.0, episode_result.reward))
+        log_event("STEP", "http_grader_result", session_id=request.session_id, task_id=task_id, score=round(score, 4))
 
-    return GraderResponse(
-        session_id=request.session_id,
-        task_id=session["task_id"],
-        score=max(0.0, min(1.0, episode_result.reward)),
-        metrics=episode_result.metrics.to_dict(),
-        final_answer=episode_result.final_answer,
-    )
+        return GraderResponse(
+            session_id=request.session_id,
+            task_id=task_id,
+            score=score,
+            metrics=episode_result.metrics.to_dict(),
+            final_answer=episode_result.final_answer,
+        )
+    except Exception:
+        status = "error"
+        raise
+    finally:
+        log_event(
+            "END",
+            "http_grader",
+            session_id=request.session_id,
+            task_id=task_id,
+            status=status,
+            elapsed_ms=elapsed_ms(started_at),
+        )
 
 
 @app.get("/baseline")
@@ -272,38 +348,55 @@ def baseline() -> Dict[str, Any]:
     Run the built-in baseline agents on all 3 tasks and return their scores.
     Uses 5 seeds per task to keep response time reasonable.
     """
-    seeds = list(range(42, 47))
-    baseline_agents = {
-        "no_memory": NoMemoryAgent(),
-        "store_everything": StoreEverythingAgent(),
-        "rule_based": RuleBasedMemoryAgent(),
-    }
+    started_at = now_monotonic()
+    status = "ok"
+    log_event("START", "http_baseline")
+    try:
+        seeds = list(range(42, 47))
+        baseline_agents = {
+            "no_memory": NoMemoryAgent(),
+            "store_everything": StoreEverythingAgent(),
+            "rule_based": RuleBasedMemoryAgent(),
+        }
 
-    results: Dict[str, Any] = {}
+        results: Dict[str, Any] = {}
 
-    for task in ALL_TASKS:
-        task_results: Dict[str, Any] = {}
-        for agent_name, agent in baseline_agents.items():
-            env = _make_env(task.task_id)
-            scores = []
-            for seed in seeds:
-                ep_result = run_episode(agent, env, seed=seed)
-                scores.append(max(0.0, min(1.0, ep_result.reward)))
-            avg = sum(scores) / len(scores)
-            task_results[agent_name] = {
-                "scores": scores,
-                "average": round(avg, 4),
-            }
-        results[task.task_id] = task_results
+        for task in ALL_TASKS:
+            task_results: Dict[str, Any] = {}
+            log_event("STEP", "http_baseline_task_started", task_id=task.task_id)
+            for agent_name, agent in baseline_agents.items():
+                env = _make_env(task.task_id)
+                scores = []
+                for seed in seeds:
+                    ep_result = run_episode(agent, env, seed=seed)
+                    scores.append(max(0.0, min(1.0, ep_result.reward)))
+                avg = sum(scores) / len(scores)
+                task_results[agent_name] = {
+                    "scores": scores,
+                    "average": round(avg, 4),
+                }
+                log_event(
+                    "STEP",
+                    "http_baseline_agent_result",
+                    task_id=task.task_id,
+                    agent_name=agent_name,
+                    average=round(avg, 4),
+                )
+            results[task.task_id] = task_results
 
-    return {
-        "baseline_scores": results,
-        "seeds_used": seeds,
-        "note": (
-            "rule_based is the strongest baseline. "
-            "An RL-trained policy should exceed rule_based on hidden seeds."
-        ),
-    }
+        return {
+            "baseline_scores": results,
+            "seeds_used": seeds,
+            "note": (
+                "rule_based is the strongest baseline. "
+                "An RL-trained policy should exceed rule_based on hidden seeds."
+            ),
+        }
+    except Exception:
+        status = "error"
+        raise
+    finally:
+        log_event("END", "http_baseline", status=status, elapsed_ms=elapsed_ms(started_at))
 
 
 # ---------------------------------------------------------------------------
@@ -333,8 +426,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     env: Optional[MemoryManagementEnv] = None
     task_id: Optional[str] = None
     episode_done: bool = False
+    connection_id = str(uuid.uuid4())
+    started_at = now_monotonic()
+    final_status = "ok"
+    log_event("START", "ws_session", connection_id=connection_id)
 
     async def _err(message: str, code: str) -> None:
+        log_event("STEP", "ws_error", connection_id=connection_id, task_id=task_id, code=code)
         await websocket.send_json({"type": "error", "data": {"message": message, "code": code}})
 
     try:
@@ -348,6 +446,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
             msg_type = msg.get("type")
             data = msg.get("data") or {}
+            log_event("STEP", "ws_message_received", connection_id=connection_id, task_id=task_id, message_type=msg_type)
 
             if msg_type == "reset":
                 tid = data.get("task_id") or ALL_TASKS[0].task_id
@@ -358,6 +457,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 env = _make_env(tid)
                 obs = env.reset(seed=data.get("seed"))
                 episode_done = False
+                log_event("STEP", "ws_reset_completed", connection_id=connection_id, task_id=task_id, seed=data.get("seed"))
                 await websocket.send_json({
                     "type": "observation",
                     "data": {"observation": obs.to_dict(), "reward": None, "done": False},
@@ -380,6 +480,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     continue
                 result = env.step(data)
                 episode_done = result.done
+                log_event(
+                    "STEP",
+                    "ws_step_result",
+                    connection_id=connection_id,
+                    task_id=task_id,
+                    done=result.done,
+                    reward=round(result.reward, 4),
+                )
                 resp: Dict[str, Any] = {
                     "observation": result.observation.to_dict() if result.observation else None,
                     "reward": result.reward,
@@ -403,18 +511,29 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 })
 
             elif msg_type == "close":
+                final_status = "closed"
                 break
 
             else:
                 await _err(f"Unknown message type: {msg_type!r}", "UNKNOWN_TYPE")
 
     except WebSocketDisconnect:
-        pass
+        final_status = "disconnect"
     except Exception as exc:
+        final_status = "error"
         try:
             await _err(str(exc), "EXECUTION_ERROR")
         except Exception:
             pass
+    finally:
+        log_event(
+            "END",
+            "ws_session",
+            connection_id=connection_id,
+            task_id=task_id,
+            status=final_status,
+            elapsed_ms=elapsed_ms(started_at),
+        )
 
 
 # ---------------------------------------------------------------------------
