@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from typing import Any, Dict, List, Optional
 import uuid
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from src.memory_management_agent import (
@@ -188,9 +188,10 @@ def list_tasks() -> Dict[str, Any]:
 
 
 @app.post("/reset", response_model=ResetResponse)
-def reset(request: ResetRequest) -> ResetResponse:
+def reset(request: ResetRequest | None = Body(default=None)) -> ResetResponse:
     started_at = now_monotonic()
     status = "ok"
+    request = request or ResetRequest()
     task_id = request.task_id or ALL_TASKS[0].task_id
     session_id = request.session_id
     log_event("START", "http_reset", task_id=task_id, session_id=session_id)

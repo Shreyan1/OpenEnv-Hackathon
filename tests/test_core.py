@@ -10,6 +10,8 @@ from unittest import mock
 import importlib
 import types
 
+from fastapi.testclient import TestClient
+
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -335,6 +337,18 @@ class LoggingTests(unittest.TestCase):
         self.assertIn("[START] event=\"http_grader\"", output)
         self.assertIn("[STEP] event=\"http_grader_result\"", output)
         self.assertIn("[END] event=\"http_grader\"", output)
+
+    def test_http_reset_accepts_empty_post_body(self) -> None:
+        from server.app import app
+
+        client = TestClient(app)
+        response = client.post("/reset")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("session_id", payload)
+        self.assertEqual(payload["task_id"], "easy_preference_recall")
+        self.assertIn("observation", payload)
 
 
 if __name__ == "__main__":
