@@ -1,4 +1,14 @@
 
+---
+title: Memory Management RL Environment
+emoji: "🧠"
+colorFrom: blue
+colorTo: cyan
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # Memory Management RL Environment
 
 An OpenEnv benchmark for training agents to selectively remember, update, retrieve, and forget under a fixed memory budget.
