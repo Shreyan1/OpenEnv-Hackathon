@@ -111,8 +111,8 @@ endpoints:
           type: string
         score:
           type: number
-          minimum: 0.0
-          maximum: 1.0
+          exclusiveMinimum: 0.0
+          exclusiveMaximum: 1.0
         metrics:
           type: object
           description: 15-dimensional deterministic grading breakdown including constraint adherence.
@@ -290,14 +290,14 @@ schemas:
 
 reward:
   type: dense_plus_delayed
-  range: [0.0, 1.0]
+  range: (0.0, 1.0)
   description: >
     Dense rewards fire on each store, ignore, retrieve, update, delete, or
     answer step. A terminal reward is computed from deterministic grader metrics:
       R = 0.40*success + 0.18*precision + 0.12*recall
         + 0.10*constraint_adherence + 0.05*compactness
         + 0.05*freshness + 0.10*non_interference - penalties
-    Scores are clamped to [0.0, 1.0].
+    Scores are clamped to the strict open interval (0.0, 1.0).
 
 baseline:
   agent: RuleBasedMemoryAgent

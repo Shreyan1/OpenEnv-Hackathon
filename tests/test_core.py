@@ -29,6 +29,7 @@ from memory_management_agent import (  # noqa: E402
     TASK_HARD,
     TASK_MEDIUM,
     generator_for_task,
+    normalize_task_score,
 )
 from memory_management_agent.evaluation import evaluate_split, hidden_eval_seeds, run_episode  # noqa: E402
 from memory_management_agent.training import build_policy_prompt, parse_action_block, summarize_rollouts  # noqa: E402
@@ -118,7 +119,15 @@ class EnvironmentTests(unittest.TestCase):
         self.assertGreaterEqual(steps, 5)
         episode_result = env.build_episode_result()
         self.assertIsNotNone(episode_result.metrics)
-        self.assertGreaterEqual(episode_result.reward, -1.0)
+        self.assertGreater(episode_result.reward, 0.0)
+        self.assertLess(episode_result.reward, 1.0)
+
+    def test_normalize_task_score_uses_strict_open_interval(self) -> None:
+        self.assertEqual(normalize_task_score(-1.0), 0.0001)
+        self.assertEqual(normalize_task_score(0.0), 0.0001)
+        self.assertEqual(normalize_task_score(0.25), 0.25)
+        self.assertEqual(normalize_task_score(1.0), 0.9999)
+        self.assertEqual(normalize_task_score(5.0), 0.9999)
 
     def test_hidden_turn_kind_observation_masks_recent_context(self) -> None:
         env = MemoryManagementEnv(generator=generator_for_task(TASK_MEDIUM))
@@ -326,6 +335,8 @@ class LoggingTests(unittest.TestCase):
 
             grader_response = grader(GraderRequest(session_id=session_id))
             self.assertEqual(grader_response.task_id, "easy_preference_recall")
+            self.assertGreater(grader_response.score, 0.0)
+            self.assertLess(grader_response.score, 1.0)
 
         output = stdout.getvalue()
         self.assertIn("[START] event=\"http_reset\"", output)
@@ -349,6 +360,26 @@ class LoggingTests(unittest.TestCase):
         self.assertIn("session_id", payload)
         self.assertEqual(payload["task_id"], "easy_preference_recall")
         self.assertIn("observation", payload)
+
+    def test_http_grader_clamps_boundary_scores_into_open_interval(self) -> None:
+        from server.app import app
+
+        client = TestClient(app)
+        reset_response = client.post("/reset", json={"task_id": "easy_preference_recall", "seed": 1})
+        session_id = reset_response.json()["session_id"]
+
+        with mock.patch(
+            "server.app.MemoryManagementEnv.build_episode_result",
+            return_value=types.SimpleNamespace(
+                reward=1.0,
+                metrics=types.SimpleNamespace(to_dict=lambda: {}),
+                final_answer="done",
+            ),
+        ):
+            response = client.post("/grader", json={"session_id": session_id})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["score"], 0.9999)
 
 
 if __name__ == "__main__":

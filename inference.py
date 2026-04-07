@@ -21,6 +21,7 @@ from openai import OpenAI
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.memory_management_agent.environment import MemoryManagementEnv
+from src.memory_management_agent.grader import normalize_task_score
 from src.memory_management_agent.logging_utils import elapsed_ms, log_event, now_monotonic
 from src.memory_management_agent.tasks import ALL_TASKS, generator_for_task
 
@@ -193,9 +194,9 @@ def _run_episode(env: MemoryManagementEnv, client: OpenAI, seed: int) -> float:
         "seed_run",
         seed=seed,
         step_count=step_count,
-        score=round(max(0.0, min(1.0, ep_result.reward)), 4),
+        score=round(normalize_task_score(ep_result.reward), 4),
     )
-    return max(0.0, min(1.0, ep_result.reward))
+    return normalize_task_score(ep_result.reward)
 
 # ---------------------------------------------------------------------------
 # Main
@@ -273,11 +274,11 @@ def main() -> None:
     print(json.dumps(all_scores, indent=2))
     print()
 
-    # Verify all scores are in [0.0, 1.0]
+    # Verify all scores are strictly within (0.0, 1.0)
     for task_id, result in all_scores.items():
         for s in result["scores"]:
-            assert 0.0 <= s <= 1.0, f"Score out of range: {task_id} = {s}"
-    print("All scores in [0.0, 1.0] range. OK")
+            assert 0.0 < s < 1.0, f"Score out of range: {task_id} = {s}"
+    print("All scores in (0.0, 1.0) range. OK")
     log_event(
         "END",
         "inference_run",

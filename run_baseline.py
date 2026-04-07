@@ -27,6 +27,7 @@ from src.memory_management_agent import (
     PreferenceOnlyAgent,
     KeywordRetrievalAgent,
     RuleBasedMemoryAgent,
+    normalize_task_score,
     run_episode,
 )
 from src.memory_management_agent.environment import MemoryManagementEnv
@@ -51,7 +52,7 @@ def run_agent_on_task(agent, task_id: str, seeds: list[int]) -> dict:
     scores = []
     for seed in seeds:
         result = run_episode(agent, env, seed=seed)
-        score = max(0.0, min(1.0, result.reward))
+        score = normalize_task_score(result.reward)
         scores.append(score)
     return {
         "scores": [round(s, 4) for s in scores],

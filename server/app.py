@@ -32,6 +32,7 @@ from src.memory_management_agent import (
     RuleBasedMemoryAgent,
     NoMemoryAgent,
     StoreEverythingAgent,
+    normalize_task_score,
     run_episode,
 )
 from src.memory_management_agent.environment import MemoryManagementEnv
@@ -93,7 +94,7 @@ class GraderRequest(BaseModel):
 class GraderResponse(BaseModel):
     session_id: str
     task_id: str
-    score: float           # 0.0 – 1.0  (normalised reward)
+    score: float           # strictly between 0.0 and 1.0 (normalised reward)
     metrics: Dict[str, Any]
     final_answer: str
 
@@ -319,7 +320,7 @@ def grader(request: GraderRequest) -> GraderResponse:
         env: MemoryManagementEnv = session["env"]
         episode_result = env.build_episode_result()
         session["last_accessed_at"] = time.time()
-        score = max(0.0, min(1.0, episode_result.reward))
+        score = normalize_task_score(episode_result.reward)
         log_event("STEP", "http_grader_result", session_id=request.session_id, task_id=task_id, score=round(score, 4))
 
         return GraderResponse(
@@ -370,7 +371,7 @@ def baseline() -> Dict[str, Any]:
                 scores = []
                 for seed in seeds:
                     ep_result = run_episode(agent, env, seed=seed)
-                    scores.append(max(0.0, min(1.0, ep_result.reward)))
+                    scores.append(normalize_task_score(ep_result.reward))
                 avg = sum(scores) / len(scores)
                 task_results[agent_name] = {
                     "scores": scores,
@@ -496,7 +497,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 }
                 if result.done:
                     ep = env.build_episode_result()
-                    resp["score"] = max(0.0, min(1.0, ep.reward))
+                    resp["score"] = normalize_task_score(ep.reward)
                     resp["metrics"] = ep.metrics.to_dict()
                     resp["final_answer"] = ep.final_answer
                 await websocket.send_json({"type": "observation", "data": resp})

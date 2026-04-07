@@ -8,6 +8,14 @@ from typing import Callable, Sequence
 from .schemas import ActionRecord, Episode, GraderMetrics, MemoryItem, MemoryType
 from .utils import token_count, token_set
 
+STRICT_SCORE_MIN = 0.0001
+STRICT_SCORE_MAX = 0.9999
+
+
+def normalize_task_score(score: float) -> float:
+    """Clamp externally reported task scores into the strict open interval (0, 1)."""
+    return min(STRICT_SCORE_MAX, max(STRICT_SCORE_MIN, score))
+
 
 def _is_valid_json(answer: str) -> bool:
     try:
@@ -64,7 +72,7 @@ class RewardComposer:
             self.contradiction_penalty_weight * metrics.contradiction_penalty
             + self.memory_bloat_penalty_weight * metrics.memory_bloat_penalty
         )
-        return max(0.0, min(1.0, base - penalties))
+        return normalize_task_score(base - penalties)
 
 
 class Grader:

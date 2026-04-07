@@ -60,6 +60,7 @@ R = 0.40 * success
 ```
 
 Dense step rewards fire on each store, retrieve, ignore, update, delete, and answer action during the episode.
+Final task scores are clamped to the strict open interval `(0, 1)`, so externally reported scores are never exactly `0.0` or `1.0`.
 
 ## Quick Start
 

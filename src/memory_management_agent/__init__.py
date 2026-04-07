@@ -11,7 +11,7 @@ from .agents import (
 )
 from .environment import MemoryManagementEnv
 from .episode import SyntheticEpisodeGenerator
-from .grader import Grader, RewardComposer
+from .grader import Grader, RewardComposer, normalize_task_score
 from .evaluation import BenchmarkReport, EvaluationSummary, evaluate_split, hidden_eval_seeds, run_episode
 from .analysis import AnalysisReport, FailureCase, MemoryTurnSnapshot, analyze_rollouts, memory_evolution_text, summarize_memory_evolution
 from .memory_store import MemoryStore
@@ -94,6 +94,7 @@ __all__ = [
     "render_training_run_summary",
     "summarize_rollouts",
     "summarize_memory_evolution",
+    "normalize_task_score",
     "ALL_TASKS",
     "TASK_BY_ID",
     "TASK_EASY",
