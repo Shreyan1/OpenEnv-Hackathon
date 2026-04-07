@@ -273,19 +273,22 @@ def step(request: StepRequest) -> StepResponse:
         result = env.step(action_dict)
         session["done"] = result.done
         session["last_accessed_at"] = time.time()
+        response_reward = result.reward
+        if result.done:
+            response_reward = normalize_task_score(env.build_episode_result().reward)
         log_event(
             "STEP",
             "http_step_result",
             session_id=request.session_id,
             task_id=task_id,
             done=result.done,
-            reward=round(result.reward, 4),
+            reward=round(response_reward, 4),
         )
 
         return StepResponse(
             session_id=request.session_id,
             observation=result.observation.to_dict() if result.observation else None,
-            reward=result.reward,
+            reward=response_reward,
             done=result.done,
             info=result.info,
         )
@@ -482,21 +485,26 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     continue
                 result = env.step(data)
                 episode_done = result.done
+                response_reward = result.reward
+                ep = None
+                if result.done:
+                    ep = env.build_episode_result()
+                    response_reward = normalize_task_score(ep.reward)
                 log_event(
                     "STEP",
                     "ws_step_result",
                     connection_id=connection_id,
                     task_id=task_id,
                     done=result.done,
-                    reward=round(result.reward, 4),
+                    reward=round(response_reward, 4),
                 )
                 resp: Dict[str, Any] = {
                     "observation": result.observation.to_dict() if result.observation else None,
-                    "reward": result.reward,
+                    "reward": response_reward,
                     "done": result.done,
                 }
                 if result.done:
-                    ep = env.build_episode_result()
+                    assert ep is not None
                     resp["score"] = normalize_task_score(ep.reward)
                     resp["metrics"] = ep.metrics.to_dict()
                     resp["final_answer"] = ep.final_answer

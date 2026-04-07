@@ -381,6 +381,44 @@ class LoggingTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["score"], 0.9999)
 
+    def test_http_step_terminal_reward_uses_strict_final_score(self) -> None:
+        from server.app import app
+
+        client = TestClient(app)
+        reset_response = client.post("/reset", json={"task_id": "easy_preference_recall", "seed": 1})
+        session_id = reset_response.json()["session_id"]
+
+        response = client.post(
+            "/step",
+            json={"session_id": session_id, "action": {"type": "answer", "text": "answering too early"}},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["done"])
+        self.assertGreater(payload["reward"], 0.0)
+        self.assertLess(payload["reward"], 1.0)
+
+    def test_websocket_terminal_reward_and_score_use_strict_interval(self) -> None:
+        from server.app import app
+
+        client = TestClient(app)
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json({"type": "reset", "data": {"task_id": "easy_preference_recall", "seed": 1}})
+            reset_payload = websocket.receive_json()
+            self.assertEqual(reset_payload["type"], "observation")
+
+            websocket.send_json({"type": "step", "data": {"type": "answer", "text": "answering too early"}})
+            step_payload = websocket.receive_json()
+
+        self.assertEqual(step_payload["type"], "observation")
+        data = step_payload["data"]
+        self.assertTrue(data["done"])
+        self.assertGreater(data["reward"], 0.0)
+        self.assertLess(data["reward"], 1.0)
+        self.assertGreater(data["score"], 0.0)
+        self.assertLess(data["score"], 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()
