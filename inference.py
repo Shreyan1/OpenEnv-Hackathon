@@ -5,6 +5,8 @@ Required environment variables:
     API_BASE_URL   The LLM API endpoint (e.g. https://router.huggingface.co/v1)
     MODEL_NAME     The model identifier to use for inference
     HF_TOKEN       Your Hugging Face / API key
+Optional environment variables:
+    LOCAL_IMAGE_NAME  Optional local Docker image name when using from_docker_image()
 """
 from __future__ import annotations
 
@@ -31,7 +33,8 @@ from src.memory_management_agent.tasks import ALL_TASKS, generator_for_task
 
 API_BASE_URL: str = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME: str = os.getenv("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
-HF_TOKEN: str = os.getenv("HF_TOKEN") or os.getenv("API_KEY") or ""
+HF_TOKEN: str | None = os.getenv("HF_TOKEN")
+LOCAL_IMAGE_NAME: str | None = os.getenv("LOCAL_IMAGE_NAME")
 
 SEEDS: List[int] = [42, 43, 44]
 MAX_TOKENS: int = 512
