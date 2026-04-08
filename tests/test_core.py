@@ -4,7 +4,7 @@ import os
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from unittest import mock
 import importlib
@@ -331,6 +331,7 @@ class LoggingTests(unittest.TestCase):
     def test_inference_main_emits_start_step_end_logs(self) -> None:
         inference = _import_inference_with_fake_openai()
         stdout = StringIO()
+        stderr = StringIO()
         with (
             mock.patch.dict(
                 os.environ,
@@ -344,23 +345,33 @@ class LoggingTests(unittest.TestCase):
             mock.patch.object(inference, "HF_TOKEN", "test-token"),
             mock.patch.object(inference, "API_BASE_URL", "https://example.invalid/v1"),
             mock.patch.object(inference, "MODEL_NAME", "fake-model"),
-            mock.patch.object(inference, "_run_episode", return_value=0.5),
+            mock.patch.object(inference, "_run_episode", return_value=(0.5, 1)),
             redirect_stdout(stdout),
+            redirect_stderr(stderr),
         ):
             inference.main()
 
-        output = stdout.getvalue()
-        self.assertIn("[START] event=\"inference_run\"", output)
-        self.assertIn("[START] event=\"task_run\"", output)
-        self.assertIn("[STEP] event=\"seed_result\"", output)
-        self.assertIn("[END] event=\"task_run\"", output)
-        self.assertIn("[END] event=\"inference_run\"", output)
+        out = stdout.getvalue()
+        # Validator-facing structured lines (must be on stdout).
+        self.assertEqual(out.count("[START] task="), 3)
+        self.assertEqual(out.count("[STEP] step="), 9)
+        self.assertEqual(out.count("[END] task="), 3)
+        self.assertIn("score=", out)
+        self.assertIn("steps=", out)
+
+        err = stderr.getvalue()
+        # Detailed logs stay on stderr.
+        self.assertIn("[START] event=\"inference_run\"", err)
+        self.assertIn("[START] event=\"task_run\"", err)
+        self.assertIn("[STEP] event=\"seed_result\"", err)
+        self.assertIn("[END] event=\"task_run\"", err)
+        self.assertIn("[END] event=\"inference_run\"", err)
 
     def test_server_routes_emit_start_step_end_logs(self) -> None:
         from server.app import GraderRequest, ResetRequest, StepRequest, grader, reset, step
 
-        stdout = StringIO()
-        with redirect_stdout(stdout):
+        stderr = StringIO()
+        with redirect_stderr(stderr):
             reset_response = reset(ResetRequest(task_id="easy_preference_recall", seed=42))
             session_id = reset_response.session_id
 
@@ -372,7 +383,7 @@ class LoggingTests(unittest.TestCase):
             self.assertGreater(grader_response.score, 0.0)
             self.assertLess(grader_response.score, 1.0)
 
-        output = stdout.getvalue()
+        output = stderr.getvalue()
         self.assertIn("[START] event=\"http_reset\"", output)
         self.assertIn("[STEP] event=\"http_reset_session_created\"", output)
         self.assertIn("[END] event=\"http_reset\"", output)

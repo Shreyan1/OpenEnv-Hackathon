@@ -10,7 +10,6 @@ Optional environment variables:
 """
 from __future__ import annotations
 
-import json
 import os
 import re
 import sys
@@ -225,9 +224,11 @@ def main() -> None:
 
     all_scores: Dict[str, Any] = {}
 
+    global_step = 0
     for task in ALL_TASKS:
         task_started_at = now_monotonic()
         log_event("START", "task_run", task_id=task.task_id, difficulty=task.difficulty)
+        print(f"[START] task={task.task_id}", flush=True)
         env = MemoryManagementEnv(
             generator=generator_for_task(task),
             memory_budget=task.memory_budget,
@@ -243,6 +244,7 @@ def main() -> None:
             score, n_steps = _run_episode(env, client, seed)
             scores.append(score)
             total_steps += n_steps
+            global_step += n_steps
             log_event(
                 "STEP",
                 "seed_result",
@@ -251,6 +253,7 @@ def main() -> None:
                 score=round(score, 4),
                 elapsed_ms=elapsed_ms(seed_started_at),
             )
+            print(f"[STEP] step={global_step} reward={round(score, 4)}", flush=True)
 
         avg = normalize_task_score(sum(scores) / len(scores))
         all_scores[task.task_id] = {
@@ -265,8 +268,7 @@ def main() -> None:
             elapsed_ms=elapsed_ms(task_started_at),
             status="ok",
         )
-        # Emit only the strict machine-parseable terminal line.
-        print(f"[END] task={task.task_id} score={round(avg, 4)}", flush=True)
+        print(f"[END] task={task.task_id} score={round(avg, 4)} steps={total_steps}", flush=True)
 
     # Verify all scores are strictly within (0.0, 1.0)
     for task_id, result in all_scores.items():
