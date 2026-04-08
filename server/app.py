@@ -13,6 +13,7 @@ Endpoints:
 from __future__ import annotations
 
 import json
+import numbers
 import sys
 import os
 import time
@@ -124,6 +125,19 @@ def _cleanup_expired_sessions(now: Optional[float] = None) -> None:
     ]
     for session_id in expired:
         _sessions.pop(session_id, None)
+
+
+def _sanitize_numeric_fields(value: Any) -> Any:
+    """Recursively clamp all numeric fields into strict (0, 1), excluding booleans."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, numbers.Real):
+        return normalize_task_score(float(value))
+    if isinstance(value, dict):
+        return {k: _sanitize_numeric_fields(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_numeric_fields(v) for v in value]
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -287,10 +301,7 @@ def step(request: StepRequest) -> StepResponse:
 
         info = dict(result.info)
         if result.done and isinstance(info.get("metrics"), dict):
-            info["metrics"] = {
-                k: normalize_task_score(v) if isinstance(v, float) else v
-                for k, v in info["metrics"].items()
-            }
+            info["metrics"] = _sanitize_numeric_fields(info["metrics"])
         return StepResponse(
             session_id=request.session_id,
             observation=result.observation.to_dict() if result.observation else None,
@@ -332,11 +343,7 @@ def grader(request: GraderRequest) -> GraderResponse:
         score = normalize_task_score(episode_result.reward)
         log_event("STEP", "http_grader_result", session_id=request.session_id, task_id=task_id, score=round(score, 4))
 
-        raw_metrics = episode_result.metrics.to_dict()
-        clamped_metrics = {
-            k: normalize_task_score(v) if isinstance(v, float) else v
-            for k, v in raw_metrics.items()
-        }
+        clamped_metrics = _sanitize_numeric_fields(episode_result.metrics.to_dict())
         return GraderResponse(
             session_id=request.session_id,
             task_id=task_id,
@@ -517,10 +524,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 if result.done:
                     assert ep is not None
                     resp["score"] = normalize_task_score(ep.reward)
-                    resp["metrics"] = {
-                        k: normalize_task_score(v) if isinstance(v, float) else v
-                        for k, v in ep.metrics.to_dict().items()
-                    }
+                    resp["metrics"] = _sanitize_numeric_fields(ep.metrics.to_dict())
                     resp["final_answer"] = ep.final_answer
                 await websocket.send_json({"type": "observation", "data": resp})
 

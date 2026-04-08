@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import time
 from typing import Any
 
@@ -20,4 +21,5 @@ def log_event(stage: str, event: str, **fields: Any) -> None:
         if value is None:
             continue
         parts.append(f"{key}={json.dumps(value, sort_keys=True)}")
-    print(" ".join(parts), flush=True)
+    # Keep operational logs off stdout so validator parsers only see intended score lines.
+    print(" ".join(parts), flush=True, file=sys.stderr)

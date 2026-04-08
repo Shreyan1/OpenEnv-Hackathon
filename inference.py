@@ -223,17 +223,11 @@ def main() -> None:
         task_count=len(ALL_TASKS),
     )
 
-    print(f"Model:    {MODEL_NAME}")
-    print(f"API Base: {API_BASE_URL}")
-    print(f"Seeds:    {SEEDS}")
-    print()
-
     all_scores: Dict[str, Any] = {}
 
     for task in ALL_TASKS:
         task_started_at = now_monotonic()
         log_event("START", "task_run", task_id=task.task_id, difficulty=task.difficulty)
-        print(f"Task: {task.task_id}  [{task.difficulty}]")
         env = MemoryManagementEnv(
             generator=generator_for_task(task),
             memory_budget=task.memory_budget,
@@ -257,7 +251,6 @@ def main() -> None:
                 score=round(score, 4),
                 elapsed_ms=elapsed_ms(seed_started_at),
             )
-            print(f"  seed={seed}  score={score:.4f}")
 
         avg = normalize_task_score(sum(scores) / len(scores))
         all_scores[task.task_id] = {
@@ -272,21 +265,14 @@ def main() -> None:
             elapsed_ms=elapsed_ms(task_started_at),
             status="ok",
         )
-        print(f"[END] task={task.task_id} score={round(avg, 4)} steps={total_steps}", flush=True)
-        print(f"  → average: {avg:.4f}")
-        print()
-
-    print("=" * 50)
-    print("Final results:")
-    print(json.dumps(all_scores, indent=2))
-    print()
+        # Emit only the strict machine-parseable terminal line.
+        print(f"[END] task={task.task_id} score={round(avg, 4)}", flush=True)
 
     # Verify all scores are strictly within (0.0, 1.0)
     for task_id, result in all_scores.items():
         for s in result["scores"]:
             assert 0.0 < s < 1.0, f"Score out of range: {task_id} = {s}"
         assert 0.0 < result["average"] < 1.0, f"Average out of range: {task_id} = {result['average']}"
-    print("All scores in (0.0, 1.0) range. OK")
     log_event(
         "END",
         "inference_run",
