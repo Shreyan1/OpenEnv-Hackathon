@@ -375,7 +375,7 @@ def baseline() -> Dict[str, Any]:
                 for seed in seeds:
                     ep_result = run_episode(agent, env, seed=seed)
                     scores.append(normalize_task_score(ep_result.reward))
-                avg = sum(scores) / len(scores)
+                avg = normalize_task_score(sum(scores) / len(scores))
                 task_results[agent_name] = {
                     "scores": scores,
                     "average": round(avg, 4),
