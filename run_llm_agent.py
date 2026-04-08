@@ -35,6 +35,7 @@ from openenv.core.generic_client import GenericEnvClient
 from openenv.core.client_types import StepResult
 from openenv.core.llm_client import create_llm_client
 
+from src.memory_management_agent.grader import normalize_task_score
 from src.memory_management_agent.training import parse_action_block
 from src.memory_management_agent.tasks import ALL_TASKS, TASK_BY_ID
 
@@ -42,6 +43,15 @@ from src.memory_management_agent.tasks import ALL_TASKS, TASK_BY_ID
 DEFAULT_SEEDS = [42, 43, 44, 45, 46]
 DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 DEFAULT_SERVER = "http://localhost:7860"
+
+
+def _require_task_score(raw_score: Any) -> float:
+    if raw_score is None:
+        raise ValueError("Missing terminal task score in environment response.")
+    score = normalize_task_score(float(raw_score))
+    if not 0.0 < score < 1.0:
+        raise ValueError(f"Invalid terminal task score: {raw_score!r}")
+    return score
 
 
 # ---------------------------------------------------------------------------
@@ -78,14 +88,14 @@ class _MemoryEnvClient(GenericEnvClient):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        self.last_score: float = 0.0
+        self.last_score: Optional[float] = None
         self.last_metrics: Dict[str, Any] = {}
         self.last_final_answer: str = ""
 
     def _parse_result(self, payload: Dict[str, Any]) -> StepResult[Dict[str, Any]]:
         result = super()._parse_result(payload)
         if payload.get("done"):
-            self.last_score = float(payload.get("score", 0.0))
+            self.last_score = _require_task_score(payload.get("score"))
             self.last_metrics = payload.get("metrics", {})
             self.last_final_answer = payload.get("final_answer", "")
         return result
@@ -200,7 +210,7 @@ async def run_episode(
         return {
             "task_id": task_id,
             "seed": seed,
-            "score": env.last_score,
+            "score": _require_task_score(env.last_score),
             "reward": result.reward,
             "steps": steps,
             "final_answer": env.last_final_answer,
@@ -260,7 +270,7 @@ async def run_episode_http(
     return {
         "task_id": task_id,
         "seed": seed,
-        "score": grader_resp.get("score", 0.0),
+        "score": _require_task_score(grader_resp.get("score")),
         "reward": last_reward,
         "steps": steps,
         "final_answer": grader_resp.get("final_answer", ""),
@@ -281,7 +291,9 @@ def _fetch_baseline_scores(server_url: str) -> Dict[str, float]:
         result = {}
         for task_id, agents in data.get("baseline_scores", {}).items():
             rb = agents.get("rule_based", {})
-            result[task_id] = round(rb.get("average", 0.0), 4)
+            average = rb.get("average")
+            if average is not None:
+                result[task_id] = round(_require_task_score(average), 4)
         return result
     except Exception as exc:
         print(f"  [warn] Could not fetch baseline scores: {exc}", file=sys.stderr)
@@ -329,10 +341,10 @@ async def _run_all(args: argparse.Namespace) -> int:
 
         for seed in seeds:
             ep = await _run_ep(args.server, llm, task.task_id, seed)
-            task_scores.append(ep["score"])
+            task_scores.append(_require_task_score(ep["score"]))
             seed_results.append(ep)
 
-        avg = round(sum(task_scores) / len(task_scores), 4)
+        avg = round(_require_task_score(sum(task_scores) / len(task_scores)), 4)
         rb_avg = baseline.get(task.task_id)
 
         all_results[task.task_id] = {
@@ -340,9 +352,9 @@ async def _run_all(args: argparse.Namespace) -> int:
             "difficulty": task.difficulty,
             "model": args.model,
             "average": avg,
-            "min": round(min(task_scores), 4),
-            "max": round(max(task_scores), 4),
-            "scores": [round(s, 4) for s in task_scores],
+            "min": round(_require_task_score(min(task_scores)), 4),
+            "max": round(_require_task_score(max(task_scores)), 4),
+            "scores": [round(_require_task_score(s), 4) for s in task_scores],
             "rule_based_avg": rb_avg,
             "delta": round(avg - rb_avg, 4) if rb_avg is not None else None,
             "episodes": seed_results,
