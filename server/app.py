@@ -285,12 +285,18 @@ def step(request: StepRequest) -> StepResponse:
             reward=round(response_reward, 4),
         )
 
+        info = dict(result.info)
+        if result.done and isinstance(info.get("metrics"), dict):
+            info["metrics"] = {
+                k: normalize_task_score(v) if isinstance(v, float) else v
+                for k, v in info["metrics"].items()
+            }
         return StepResponse(
             session_id=request.session_id,
             observation=result.observation.to_dict() if result.observation else None,
             reward=response_reward,
             done=result.done,
-            info=result.info,
+            info=info,
         )
     except Exception:
         status = "error"
@@ -326,11 +332,16 @@ def grader(request: GraderRequest) -> GraderResponse:
         score = normalize_task_score(episode_result.reward)
         log_event("STEP", "http_grader_result", session_id=request.session_id, task_id=task_id, score=round(score, 4))
 
+        raw_metrics = episode_result.metrics.to_dict()
+        clamped_metrics = {
+            k: normalize_task_score(v) if isinstance(v, float) else v
+            for k, v in raw_metrics.items()
+        }
         return GraderResponse(
             session_id=request.session_id,
             task_id=task_id,
             score=score,
-            metrics=episode_result.metrics.to_dict(),
+            metrics=clamped_metrics,
             final_answer=episode_result.final_answer,
         )
     except Exception:
@@ -506,7 +517,10 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 if result.done:
                     assert ep is not None
                     resp["score"] = normalize_task_score(ep.reward)
-                    resp["metrics"] = ep.metrics.to_dict()
+                    resp["metrics"] = {
+                        k: normalize_task_score(v) if isinstance(v, float) else v
+                        for k, v in ep.metrics.to_dict().items()
+                    }
                     resp["final_answer"] = ep.final_answer
                 await websocket.send_json({"type": "observation", "data": resp})
 
