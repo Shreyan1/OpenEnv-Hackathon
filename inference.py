@@ -160,7 +160,7 @@ def _parse_action(text: str) -> Dict[str, Any]:
 # Episode runner (direct env import — no server required)
 # ---------------------------------------------------------------------------
 
-def _run_episode(env: MemoryManagementEnv, client: OpenAI, seed: int) -> float:
+def _run_episode(env: MemoryManagementEnv, client: OpenAI, seed: int) -> tuple[float, int]:
     obs = env.reset(seed=seed)
     obs_dict = obs.to_dict()
     done = False
@@ -192,14 +192,15 @@ def _run_episode(env: MemoryManagementEnv, client: OpenAI, seed: int) -> float:
             obs_dict = result.observation.to_dict()
 
     ep_result = env.build_episode_result()
+    final_score = normalize_task_score(ep_result.reward)
     log_event(
         "STEP",
         "seed_run",
         seed=seed,
         step_count=step_count,
-        score=round(normalize_task_score(ep_result.reward), 4),
+        score=round(final_score, 4),
     )
-    return normalize_task_score(ep_result.reward)
+    return final_score, step_count
 
 # ---------------------------------------------------------------------------
 # Main
@@ -242,10 +243,12 @@ def main() -> None:
         )
 
         scores: List[float] = []
+        total_steps = 0
         for seed in SEEDS:
             seed_started_at = time.perf_counter()
-            score = _run_episode(env, client, seed)
+            score, n_steps = _run_episode(env, client, seed)
             scores.append(score)
+            total_steps += n_steps
             log_event(
                 "STEP",
                 "seed_result",
@@ -256,7 +259,7 @@ def main() -> None:
             )
             print(f"  seed={seed}  score={score:.4f}")
 
-        avg = sum(scores) / len(scores)
+        avg = normalize_task_score(sum(scores) / len(scores))
         all_scores[task.task_id] = {
             "average": round(avg, 4),
             "scores": [round(s, 4) for s in scores],
@@ -269,6 +272,7 @@ def main() -> None:
             elapsed_ms=elapsed_ms(task_started_at),
             status="ok",
         )
+        print(f"[END] task={task.task_id} score={round(avg, 4)} steps={total_steps}", flush=True)
         print(f"  → average: {avg:.4f}")
         print()
 
@@ -281,6 +285,7 @@ def main() -> None:
     for task_id, result in all_scores.items():
         for s in result["scores"]:
             assert 0.0 < s < 1.0, f"Score out of range: {task_id} = {s}"
+        assert 0.0 < result["average"] < 1.0, f"Average out of range: {task_id} = {result['average']}"
     print("All scores in (0.0, 1.0) range. OK")
     log_event(
         "END",
