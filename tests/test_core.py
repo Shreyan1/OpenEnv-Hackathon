@@ -58,6 +58,40 @@ def _import_inference_with_fake_openai() -> types.ModuleType:
         return importlib.import_module("inference")
 
 
+def _import_run_llm_agent_with_fake_openenv() -> types.ModuleType:
+    generic_client_module = types.ModuleType("openenv.core.generic_client")
+    client_types_module = types.ModuleType("openenv.core.client_types")
+    llm_client_module = types.ModuleType("openenv.core.llm_client")
+
+    class DummyGenericEnvClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def _parse_result(self, payload: dict) -> object:
+            return types.SimpleNamespace(
+                observation=payload.get("observation"),
+                reward=payload.get("reward", 0.0),
+                done=payload.get("done", False),
+            )
+
+    generic_client_module.GenericEnvClient = DummyGenericEnvClient  # type: ignore[attr-defined]
+    client_types_module.StepResult = object  # type: ignore[attr-defined]
+    llm_client_module.create_llm_client = lambda *args, **kwargs: None  # type: ignore[attr-defined]
+
+    sys.modules.pop("run_llm_agent", None)
+    with mock.patch.dict(
+        sys.modules,
+        {
+            "openenv": types.ModuleType("openenv"),
+            "openenv.core": types.ModuleType("openenv.core"),
+            "openenv.core.generic_client": generic_client_module,
+            "openenv.core.client_types": client_types_module,
+            "openenv.core.llm_client": llm_client_module,
+        },
+    ):
+        return importlib.import_module("run_llm_agent")
+
+
 class EpisodeGenerationTests(unittest.TestCase):
     def test_generator_is_deterministic_for_seed(self) -> None:
         generator = SyntheticEpisodeGenerator(memory_budget=100)
@@ -380,6 +414,19 @@ class LoggingTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["score"], 0.9999)
+
+    def test_run_llm_agent_requires_terminal_score(self) -> None:
+        run_llm_agent = _import_run_llm_agent_with_fake_openenv()
+        client = run_llm_agent._MemoryEnvClient()
+
+        with self.assertRaisesRegex(ValueError, "Missing terminal task score"):
+            client._parse_result({"done": True, "reward": 0.2})
+
+    def test_run_llm_agent_normalizes_boundary_score(self) -> None:
+        run_llm_agent = _import_run_llm_agent_with_fake_openenv()
+
+        self.assertEqual(run_llm_agent._require_task_score(0.0), 0.0001)
+        self.assertEqual(run_llm_agent._require_task_score(1.0), 0.9999)
 
 
 if __name__ == "__main__":
